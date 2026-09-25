@@ -23,8 +23,9 @@ export type OcrJob = {
   error: string | null;
 };
 
-export type PdfFile = {
+export type DocumentFile = {
   path: string;
+  relativePath: string;
   name: string;
   bytes: number;
 };
@@ -41,8 +42,36 @@ export type Citation = {
   document_name: string;
   job_id: string;
   chunk_index: number;
+  page_number: number | null;
   score: number;
   excerpt: string;
+};
+
+export type OrganizationEntry = {
+  job_id: string;
+  original_filename: string;
+  source_relative_path: string;
+  suggested_path: string;
+  category: string;
+  document_date: string | null;
+  organization: string | null;
+  reason: string;
+};
+
+export type OrganizationPlan = {
+  project_id: string;
+  created_at: string;
+  entries: OrganizationEntry[];
+};
+
+export type ApplyResult = {
+  manifestPath: string;
+  copied: number;
+};
+
+export type UndoResult = {
+  removed: number;
+  skipped: number;
 };
 
 export type AskResult = {
@@ -71,8 +100,8 @@ export function listRemoteProjects() {
   return invoke<RemoteProject[]>("list_remote_projects");
 }
 
-export function submitOcrJob(path: string, projectId: string) {
-  return invoke<OcrJob>("submit_ocr_job", { path, projectId });
+export function submitOcrJob(path: string, projectId: string, sourceRelativePath?: string) {
+  return invoke<OcrJob>("submit_ocr_job", { path, projectId, sourceRelativePath });
 }
 
 export function getOcrJob(jobId: string) {
@@ -87,8 +116,8 @@ export function listProjectJobs(projectId: string) {
   return invoke<OcrJob[]>("list_project_jobs", { projectId });
 }
 
-export function listPdfFiles(path: string) {
-  return invoke<PdfFile[]>("list_pdf_files", { path });
+export function listDocumentFiles(path: string) {
+  return invoke<DocumentFile[]>("list_document_files", { path });
 }
 
 export function pauseProjectOcr(projectId: string) {
@@ -109,4 +138,20 @@ export function indexProject(projectId: string) {
 
 export function askProject(projectId: string, question: string) {
   return invoke<AskResult>("ask_project", { projectId, question });
+}
+
+export function createOrganizationPlan(projectId: string) {
+  return invoke<OrganizationPlan>("create_organization_plan", { projectId });
+}
+
+export function applyOrganizationPlan(
+  rootPath: string,
+  outputPath: string,
+  entries: OrganizationEntry[],
+) {
+  return invoke<ApplyResult>("apply_organization_plan", { rootPath, outputPath, entries });
+}
+
+export function undoOrganization(manifestPath: string) {
+  return invoke<UndoResult>("undo_organization", { manifestPath });
 }

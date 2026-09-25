@@ -17,6 +17,11 @@ Application de bureau destinée à aider les utilisateurs à inventorier, recher
 - progression globale, pause, reprise et relance des échecs ;
 - sélection et reprise des projets créés précédemment ;
 - détection côté serveur des PDF identiques déjà traités ;
+- import de PDF, textes, fichiers Office, courriels EML et images ;
+- citations par page et recherche hybride ;
+- prévisualisation modifiable du classement proposé ;
+- copie validée vers un dossier séparé, sans toucher aux originaux ;
+- résolution des conflits de noms et annulation contrôlée par empreinte SHA-256.
 - aucun déplacement ou renommage des originaux ; un PDF n'est envoyé au serveur qu'après une action explicite.
 
 ## Développement

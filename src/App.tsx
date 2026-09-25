@@ -2,26 +2,30 @@ import { FormEvent, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  applyOrganizationPlan,
   askProject,
   configureServer,
+  createOrganizationPlan,
   createRemoteProject,
   getOcrJob,
   getOcrText,
   getServerConfig,
   indexProject,
-  listPdfFiles,
+  listDocumentFiles,
   listProjectJobs,
   listRemoteProjects,
   pauseProjectOcr,
-  PdfFile,
+  DocumentFile,
   AskResult,
   IndexResult,
   OcrJob,
+  OrganizationPlan,
   RemoteProject,
   submitOcrJob,
   testServerConnection,
   resumeProjectOcr,
   retryOcrJob,
+  undoOrganization,
 } from "./server";
 import "./App.css";
 
@@ -74,17 +78,25 @@ type RagState =
 type BatchState =
   | { status: "idle" }
   | { status: "discovering" }
-  | { status: "uploading"; files: PdfFile[]; next: number; jobIds: string[]; paused: boolean }
-  | { status: "processing"; files: PdfFile[]; jobIds: string[]; paused: boolean }
-  | { status: "completed"; files: PdfFile[]; jobIds: string[] }
+  | { status: "uploading"; files: DocumentFile[]; next: number; jobIds: string[]; paused: boolean }
+  | { status: "processing"; files: DocumentFile[]; jobIds: string[]; paused: boolean }
+  | { status: "completed"; files: DocumentFile[]; jobIds: string[] }
   | {
       status: "error";
       message: string;
-      files: PdfFile[];
+      files: DocumentFile[];
       next: number;
       jobIds: string[];
       paused: boolean;
     };
+
+type OrganizationState =
+  | { status: "idle" }
+  | { status: "planning" }
+  | { status: "ready"; plan: OrganizationPlan }
+  | { status: "applying"; plan: OrganizationPlan }
+  | { status: "applied"; plan: OrganizationPlan; manifestPath: string; copied: number }
+  | { status: "error"; message: string; plan?: OrganizationPlan };
 
 function errorMessage(error: unknown, fallback: string) {
   return typeof error === "string" ? error : fallback;
@@ -133,6 +145,8 @@ function App() {
   const [projectJobs, setProjectJobs] = useState<OcrJob[]>([]);
   const [rag, setRag] = useState<RagState>({ status: "idle" });
   const [question, setQuestion] = useState("");
+  const [organization, setOrganization] = useState<OrganizationState>({ status: "idle" });
+  const [selectedPlanEntries, setSelectedPlanEntries] = useState<string[]>([]);
 
   useEffect(() => {
     let active = true;
@@ -204,7 +218,7 @@ function App() {
 
     let active = true;
     const file = batch.files[batch.next];
-    submitOcrJob(file.path, project.project.id)
+    submitOcrJob(file.path, project.project.id, file.relativePath)
       .then((job) => {
         if (!active) return;
         setBatch((current) => {
@@ -301,6 +315,7 @@ function App() {
     if (!selected) return;
     setOcr({ status: "idle" });
     setRag({ status: "idle" });
+    setOrganization({ status: "idle" });
     setBatch({ status: "idle" });
     setScan({ status: "scanning", path: selected });
     try {
@@ -323,15 +338,15 @@ function App() {
     }
   }
 
-  async function importAllPdfs() {
+  async function importAllDocuments() {
     if (scan.status !== "ready" || project.status !== "ready") return;
     setBatch({ status: "discovering" });
     try {
-      const files = await listPdfFiles(scan.summary.rootPath);
+      const files = await listDocumentFiles(scan.summary.rootPath);
       if (files.length === 0) {
         setBatch({
           status: "error",
-          message: "Aucun PDF n’a été trouvé dans ce dossier.",
+          message: "Aucun document pris en charge n’a été trouvé dans ce dossier.",
           files: [],
           next: 0,
           jobIds: [],
@@ -419,8 +434,8 @@ function App() {
     const selected = await open({
       directory: false,
       multiple: false,
-      title: "Choisir un PDF à OCRiser",
-      filters: [{ name: "Document PDF", extensions: ["pdf"] }],
+      title: "Choisir un document à analyser",
+      filters: [{ name: "Documents", extensions: ["pdf", "txt", "md", "csv", "docx", "xlsx", "pptx", "eml", "png", "jpg", "jpeg", "tif", "tiff"] }],
     });
     if (!selected) return;
     setOcr({ status: "uploading", path: selected });
@@ -429,7 +444,7 @@ function App() {
       const job = await submitOcrJob(selected, project.project.id);
       setOcr({ status: "processing", path: selected, job });
     } catch (error) {
-      setOcr({ status: "error", message: errorMessage(error, "Le PDF n’a pas pu être envoyé.") });
+      setOcr({ status: "error", message: errorMessage(error, "Le document n’a pas pu être envoyé.") });
     }
   }
 
@@ -439,8 +454,84 @@ function App() {
     try {
       const result = await indexProject(project.project.id);
       setRag({ status: "ready", result });
+      setOrganization({ status: "idle" });
     } catch (error) {
       setRag({ status: "error", message: errorMessage(error, "L’indexation a échoué.") });
+    }
+  }
+
+  async function prepareOrganization() {
+    if (project.status !== "ready") return;
+    setOrganization({ status: "planning" });
+    try {
+      const plan = await createOrganizationPlan(project.project.id);
+      setSelectedPlanEntries(plan.entries.map((entry) => entry.job_id));
+      setOrganization({ status: "ready", plan });
+    } catch (error) {
+      setOrganization({
+        status: "error",
+        message: errorMessage(error, "Impossible de préparer le classement."),
+      });
+    }
+  }
+
+  function updateSuggestedPath(jobId: string, suggestedPath: string) {
+    setOrganization((current) => {
+      if (!("plan" in current) || !current.plan) return current;
+      const plan: OrganizationPlan = {
+        ...current.plan,
+        entries: current.plan.entries.map((entry) =>
+          entry.job_id === jobId ? { ...entry, suggested_path: suggestedPath } : entry,
+        ),
+      };
+      return current.status === "applied"
+        ? { ...current, plan }
+        : { status: "ready", plan };
+    });
+  }
+
+  async function applyPlan() {
+    if (scan.status !== "ready" || !("plan" in organization) || !organization.plan) return;
+    const outputPath = await open({
+      directory: true,
+      multiple: false,
+      title: "Choisir le dossier qui recevra les copies classées",
+    });
+    if (!outputPath) return;
+    const plan = organization.plan;
+    const entries = plan.entries.filter((entry) => selectedPlanEntries.includes(entry.job_id));
+    if (entries.length === 0) return;
+    setOrganization({ status: "applying", plan });
+    try {
+      const result = await applyOrganizationPlan(scan.summary.rootPath, outputPath, entries);
+      setOrganization({
+        status: "applied",
+        plan,
+        manifestPath: result.manifestPath,
+        copied: result.copied,
+      });
+    } catch (error) {
+      setOrganization({
+        status: "error",
+        plan,
+        message: errorMessage(error, "La copie classée n’a pas pu être créée."),
+      });
+    }
+  }
+
+  async function undoLastOrganization() {
+    if (organization.status !== "applied") return;
+    if (!window.confirm("Supprimer uniquement les copies créées par ce classement ?")) return;
+    try {
+      const result = await undoOrganization(organization.manifestPath);
+      window.alert(`${result.removed} copie(s) supprimée(s), ${result.skipped} ignorée(s).`);
+      setOrganization({ status: "ready", plan: organization.plan });
+    } catch (error) {
+      setOrganization({
+        status: "error",
+        plan: organization.plan,
+        message: errorMessage(error, "L’annulation a échoué."),
+      });
     }
   }
 
@@ -463,6 +554,7 @@ function App() {
 
   const connected = connection.status === "connected";
   const indexResult = "result" in rag ? rag.result : undefined;
+  const organizationPlan = "plan" in organization ? organization.plan : undefined;
   const completedJobs = projectJobs.filter((job) => job.status === "completed");
   const failedJobs = projectJobs.filter((job) => job.status === "failed");
   const pendingJobs = projectJobs.filter(
@@ -517,6 +609,7 @@ function App() {
                   setProject(selected ? { status: "ready", project: selected } : { status: "idle" });
                   setBatch({ status: "idle" });
                   setRag({ status: "idle" });
+                  setOrganization({ status: "idle" });
                 }}
               >
                 <option value="">Créer un nouveau projet</option>
@@ -584,11 +677,11 @@ function App() {
               {project.status === "ready" && (
                 <>
                 <section className="ocr-panel" aria-labelledby="ocr-title">
-                  <div><p className="success-label">Projet prêt · {project.project.name}</p><h3 id="ocr-title">Importer les PDF du dossier</h3><p>Les sous-dossiers sont inclus. Les fichiers identiques déjà connus ne sont pas retraités.</p></div>
+                  <div><p className="success-label">Projet prêt · {project.project.name}</p><h3 id="ocr-title">Importer les documents du dossier</h3><p>PDF, textes, Office, courriels et images sont inclus. Les fichiers identiques ne sont pas retraités.</p></div>
                   {batch.status === "idle" && (
-                    <div className="import-actions"><button className="primary-button" onClick={importAllPdfs}>Importer tous les PDF</button><button className="text-button" onClick={choosePdf}>Ou choisir un seul PDF</button></div>
+                    <div className="import-actions"><button className="primary-button" onClick={importAllDocuments}>Importer tous les documents</button><button className="text-button" onClick={choosePdf}>Ou choisir un seul document</button></div>
                   )}
-                  {batch.status === "discovering" && <div className="ocr-progress"><span className="mini-spinner" /> Recherche des PDF…</div>}
+                  {batch.status === "discovering" && <div className="ocr-progress"><span className="mini-spinner" /> Recherche des documents…</div>}
                   {batch.status === "uploading" && (
                     <div className="batch-progress">
                       <div className="result-heading"><strong>Envoi {batch.next} / {batch.files.length}</strong><button className="secondary-button small-button" onClick={toggleBatchPause}>{batch.paused ? "Reprendre" : "Mettre en pause"}</button></div>
@@ -602,16 +695,16 @@ function App() {
                       <progress value={completedJobs.length + failedJobs.length} max={Math.max(batch.jobIds.length, 1)} />
                     </div>
                   )}
-                  {batch.status === "completed" && <div className="batch-complete"><strong>Import terminé</strong><span>{completedJobs.length} document(s) prêt(s), {failedJobs.length} échec(s).</span><button className="text-button" onClick={importAllPdfs}>Rechercher les nouveaux PDF</button></div>}
+                  {batch.status === "completed" && <div className="batch-complete"><strong>Import terminé</strong><span>{completedJobs.length} document(s) prêt(s), {failedJobs.length} échec(s).</span><button className="text-button" onClick={importAllDocuments}>Rechercher les nouveaux documents</button></div>}
                   {batch.status === "error" && <div className="ocr-result error-result"><p>{batch.message}</p>{batch.files.length > 0 && <button className="secondary-button" onClick={resumeUploadAfterError}>Reprendre l’envoi</button>}</div>}
                   {failedJobs.length > 0 && <button className="secondary-button retry-button" onClick={retryFailedJobs}>Relancer {failedJobs.length} échec(s)</button>}
                   {batch.status === "idle" && projectJobs.length > 0 && <p className="existing-jobs">Historique : {completedJobs.length} terminé(s), {pendingJobs.length} en cours, {failedJobs.length} en échec.</p>}
-                  {ocr.status === "uploading" && <div className="ocr-progress"><span className="mini-spinner" /> Envoi du PDF…</div>}
+                  {ocr.status === "uploading" && <div className="ocr-progress"><span className="mini-spinner" /> Envoi du document…</div>}
                   {ocr.status === "processing" && <div className="ocr-progress"><span className="mini-spinner" /> OCR en cours · {ocr.job.original_filename}</div>}
                   {ocr.status === "error" && <div className="ocr-result error-result"><p>{ocr.message}</p><button className="secondary-button" onClick={choosePdf}>Réessayer</button></div>}
                   {ocr.status === "completed" && (
                     <div className="ocr-result">
-                      <div className="result-heading"><strong>Texte extrait de {ocr.job.original_filename}</strong><button className="text-button" onClick={choosePdf}>Tester un autre PDF</button></div>
+                      <div className="result-heading"><strong>Texte extrait de {ocr.job.original_filename}</strong><button className="text-button" onClick={choosePdf}>Tester un autre document</button></div>
                       <pre>{ocr.text || "Aucun texte détecté dans ce document."}</pre>
                     </div>
                   )}
@@ -639,7 +732,25 @@ function App() {
                         <strong>Réponse</strong>
                         <p>{rag.answer.answer}</p>
                         <h4>Sources utilisées</h4>
-                        <ul>{rag.answer.citations.map((citation, index) => <li key={`${citation.job_id}-${citation.chunk_index}`}><b>[{index + 1}] {citation.document_name}</b><span>{citation.excerpt}</span></li>)}</ul>
+                        <ul>{rag.answer.citations.map((citation, index) => <li key={`${citation.job_id}-${citation.chunk_index}`}><b>[{index + 1}] {citation.document_name}{citation.page_number ? ` · page ${citation.page_number}` : ""}</b><span>{citation.excerpt}</span></li>)}</ul>
+                      </div>
+                    )}
+                    {indexResult && organization.status === "idle" && <button className="secondary-button organization-start" onClick={prepareOrganization}>Préparer le classement</button>}
+                    {organization.status === "planning" && <div className="ocr-progress organization-start"><span className="mini-spinner" /> Analyse des catégories et des noms…</div>}
+                    {organization.status === "error" && <div className="ocr-result error-result organization-start"><p>{organization.message}</p><button className="secondary-button" onClick={prepareOrganization}>Réessayer</button></div>}
+                    {organizationPlan && (
+                      <div className="organization-preview">
+                        <div className="result-heading"><div><strong>Prévisualisation du classement</strong><p>{selectedPlanEntries.length} document(s) sélectionné(s) sur {organizationPlan.entries.length}. Les originaux resteront inchangés.</p></div><button className="text-button" onClick={() => setSelectedPlanEntries(selectedPlanEntries.length === organizationPlan.entries.length ? [] : organizationPlan.entries.map((entry) => entry.job_id))}>{selectedPlanEntries.length === organizationPlan.entries.length ? "Tout désélectionner" : "Tout sélectionner"}</button></div>
+                        <div className="plan-list">
+                          {organizationPlan.entries.map((entry) => (
+                            <article key={entry.job_id} className={selectedPlanEntries.includes(entry.job_id) ? "selected" : ""}>
+                              <input type="checkbox" aria-label={`Classer ${entry.original_filename}`} checked={selectedPlanEntries.includes(entry.job_id)} onChange={() => setSelectedPlanEntries((current) => current.includes(entry.job_id) ? current.filter((id) => id !== entry.job_id) : [...current, entry.job_id])} />
+                              <div><strong>{entry.original_filename}</strong><span>{entry.category}{entry.document_date ? ` · ${entry.document_date}` : ""}</span><small>{entry.reason}</small><input aria-label={`Chemin proposé pour ${entry.original_filename}`} value={entry.suggested_path} onChange={(event) => updateSuggestedPath(entry.job_id, event.target.value)} /></div>
+                            </article>
+                          ))}
+                        </div>
+                        {organization.status !== "applied" && <button className="primary-button" disabled={organization.status === "applying" || selectedPlanEntries.length === 0} onClick={applyPlan}>{organization.status === "applying" ? "Copie en cours…" : "Valider et copier dans un nouveau dossier"}</button>}
+                        {organization.status === "applied" && <div className="organization-success"><strong>{organization.copied} copie(s) classée(s)</strong><span>Le manifeste permet une annulation sûre tant que les copies ne sont pas modifiées.</span><button className="secondary-button" onClick={undoLastOrganization}>Annuler cette copie</button></div>}
                       </div>
                     )}
                   </section>

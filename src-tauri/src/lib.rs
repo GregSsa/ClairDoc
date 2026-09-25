@@ -1,6 +1,12 @@
 use reqwest::{multipart, Client, Response, Url};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::{fs, path::PathBuf, time::Duration};
+use sha2::{Digest, Sha256};
+use std::{
+    fs,
+    io::Read,
+    path::{Component, Path, PathBuf},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 use tauri::{AppHandle, Manager};
 
 const CONFIG_FILE_NAME: &str = "server-config.json";
@@ -38,10 +44,57 @@ struct ProjectOcrState {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct PdfFile {
+struct DocumentFile {
     path: String,
+    relative_path: String,
     name: String,
     bytes: u64,
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+struct OrganizationEntry {
+    job_id: String,
+    original_filename: String,
+    source_relative_path: String,
+    suggested_path: String,
+    category: String,
+    document_date: Option<String>,
+    organization: Option<String>,
+    reason: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct OrganizationPlan {
+    project_id: String,
+    created_at: String,
+    entries: Vec<OrganizationEntry>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct ManifestEntry {
+    source: String,
+    destination: String,
+    sha256: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct OperationManifest {
+    created_at: u64,
+    entries: Vec<ManifestEntry>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApplyResult {
+    manifest_path: String,
+    copied: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UndoResult {
+    removed: usize,
+    skipped: usize,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -257,15 +310,16 @@ async fn submit_ocr_job(
     app: AppHandle,
     path: String,
     project_id: Option<String>,
+    source_relative_path: Option<String>,
 ) -> Result<OcrJobResponse, String> {
     let pdf_path = PathBuf::from(&path);
     if !pdf_path.is_file()
         || pdf_path
             .extension()
             .and_then(|extension| extension.to_str())
-            .is_none_or(|extension| !extension.eq_ignore_ascii_case("pdf"))
+            .is_none_or(|extension| !supported_document_extension(extension))
     {
-        return Err("Sélectionnez un fichier PDF accessible.".to_string());
+        return Err("Sélectionnez un document pris en charge et accessible.".to_string());
     }
 
     let config = read_server_config(&app)?;
@@ -275,11 +329,14 @@ async fn submit_ocr_job(
         .map_err(|error| format!("Impossible de lire le PDF : {error}"))?;
     let client = api_client(Duration::from_secs(7200))?;
     let mut request = client
-        .post(format!("{}/api/v1/ocr/jobs", config.server_url))
+        .post(format!("{}/api/v1/document/jobs", config.server_url))
         .header("X-ClairDoc-Key", &config.api_key)
         .multipart(form);
     if let Some(project_id) = project_id {
         request = request.query(&[("project_id", project_id)]);
+    }
+    if let Some(source_relative_path) = source_relative_path {
+        request = request.query(&[("source_relative_path", source_relative_path)]);
     }
     let response = request
         .send()
@@ -418,6 +475,202 @@ async fn ask_project(
     parse_api_response(response).await
 }
 
+#[tauri::command]
+async fn create_organization_plan(
+    app: AppHandle,
+    project_id: String,
+) -> Result<OrganizationPlan, String> {
+    let config = read_server_config(&app)?;
+    let response = api_client(Duration::from_secs(60))?
+        .post(format!(
+            "{}/api/v1/projects/{project_id}/organization/plan",
+            config.server_url
+        ))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .send()
+        .await
+        .map_err(|error| format!("Préparation du classement impossible : {error}"))?;
+    parse_api_response(response).await
+}
+
+fn safe_relative_path(value: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(value);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err("Un chemin proposé est invalide.".to_string());
+    }
+    Ok(path)
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("Impossible de vérifier {} : {error}", path.display()))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 1024 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|error| format!("Lecture impossible : {error}"))?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn available_destination(path: PathBuf) -> Result<PathBuf, String> {
+    if !path.exists() {
+        return Ok(path);
+    }
+    let parent = path.parent().unwrap_or_else(|| Path::new(""));
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("document");
+    let extension = path.extension().and_then(|value| value.to_str());
+    for suffix in 2..10000 {
+        let name = match extension {
+            Some(extension) => format!("{stem}_{suffix}.{extension}"),
+            None => format!("{stem}_{suffix}"),
+        };
+        let candidate = parent.join(name);
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err("Trop de fichiers portent déjà le même nom dans la destination.".to_string())
+}
+
+#[tauri::command]
+fn apply_organization_plan(
+    root_path: String,
+    output_path: String,
+    entries: Vec<OrganizationEntry>,
+) -> Result<ApplyResult, String> {
+    let root = PathBuf::from(root_path)
+        .canonicalize()
+        .map_err(|_| "Le dossier source est inaccessible.".to_string())?;
+    let output = PathBuf::from(output_path)
+        .canonicalize()
+        .map_err(|_| "Le dossier de destination est inaccessible.".to_string())?;
+    if output == root || output.starts_with(&root) {
+        return Err("Choisissez un dossier de destination séparé du dossier source.".to_string());
+    }
+
+    let mut prepared = Vec::new();
+    for entry in entries {
+        let source_relative = safe_relative_path(&entry.source_relative_path)?;
+        let source = root.join(source_relative).canonicalize().map_err(|_| {
+            format!(
+                "Document source introuvable : {}",
+                entry.source_relative_path
+            )
+        })?;
+        if !source.starts_with(&root) || !source.is_file() {
+            return Err("Un document source sort du dossier sélectionné.".to_string());
+        }
+        let destination_relative = safe_relative_path(&entry.suggested_path)?;
+        let destination = available_destination(output.join(destination_relative))?;
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("Création du dossier impossible : {error}"))?;
+        }
+        prepared.push((source, destination));
+    }
+
+    let mut manifest_entries = Vec::new();
+    let mut created_paths = Vec::new();
+    for (source, destination) in prepared {
+        if let Err(error) = fs::copy(&source, &destination) {
+            for created in &created_paths {
+                let _ = fs::remove_file(created);
+            }
+            return Err(format!(
+                "Copie de {} impossible : {error}",
+                source.display()
+            ));
+        }
+        created_paths.push(destination.clone());
+        let sha256 = match sha256_file(&destination) {
+            Ok(value) => value,
+            Err(error) => {
+                for created in &created_paths {
+                    let _ = fs::remove_file(created);
+                }
+                return Err(error);
+            }
+        };
+        manifest_entries.push(ManifestEntry {
+            source: source.display().to_string(),
+            destination: destination.display().to_string(),
+            sha256,
+        });
+    }
+
+    let created_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "Horloge système invalide.".to_string())?
+        .as_secs();
+    let manifest = OperationManifest {
+        created_at,
+        entries: manifest_entries,
+    };
+    let manifest_directory = output.join(".clairdoc").join("operations");
+    fs::create_dir_all(&manifest_directory)
+        .map_err(|error| format!("Création du journal impossible : {error}"))?;
+    let manifest_path = manifest_directory.join(format!("classement-{created_at}.json"));
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest)
+            .map_err(|error| format!("Journal invalide : {error}"))?,
+    )
+    .map_err(|error| format!("Écriture du journal impossible : {error}"))?;
+    Ok(ApplyResult {
+        manifest_path: manifest_path.display().to_string(),
+        copied: manifest.entries.len(),
+    })
+}
+
+#[tauri::command]
+fn undo_organization(manifest_path: String) -> Result<UndoResult, String> {
+    let manifest_path = PathBuf::from(manifest_path)
+        .canonicalize()
+        .map_err(|_| "Le journal de classement est introuvable.".to_string())?;
+    let output_root = manifest_path
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .ok_or_else(|| "Emplacement du journal invalide.".to_string())?
+        .to_path_buf();
+    let manifest: OperationManifest = serde_json::from_slice(
+        &fs::read(&manifest_path)
+            .map_err(|error| format!("Lecture du journal impossible : {error}"))?,
+    )
+    .map_err(|error| format!("Journal illisible : {error}"))?;
+
+    let mut removed = 0;
+    let mut skipped = 0;
+    for entry in manifest.entries {
+        let destination = PathBuf::from(&entry.destination);
+        let Ok(canonical) = destination.canonicalize() else {
+            skipped += 1;
+            continue;
+        };
+        if !canonical.starts_with(&output_root) || sha256_file(&canonical)? != entry.sha256 {
+            skipped += 1;
+            continue;
+        }
+        fs::remove_file(&canonical)
+            .map_err(|error| format!("Suppression de la copie impossible : {error}"))?;
+        removed += 1;
+    }
+    Ok(UndoResult { removed, skipped })
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FolderSummary {
@@ -463,7 +716,7 @@ fn scan_folder(path: String) -> Result<FolderSummary, String> {
     }
 
     let mut summary = FolderSummary::new(&root);
-    let mut pending = vec![root];
+    let mut pending = vec![root.clone()];
 
     while let Some(directory) = pending.pop() {
         let entries = match fs::read_dir(&directory) {
@@ -537,8 +790,31 @@ fn scan_folder(path: String) -> Result<FolderSummary, String> {
     Ok(summary)
 }
 
+fn supported_document_extension(extension: &str) -> bool {
+    matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "pdf"
+            | "txt"
+            | "md"
+            | "csv"
+            | "tsv"
+            | "log"
+            | "docx"
+            | "xlsx"
+            | "pptx"
+            | "eml"
+            | "png"
+            | "jpg"
+            | "jpeg"
+            | "tif"
+            | "tiff"
+            | "bmp"
+            | "webp"
+    )
+}
+
 #[tauri::command]
-fn list_pdf_files(path: String) -> Result<Vec<PdfFile>, String> {
+fn list_document_files(path: String) -> Result<Vec<DocumentFile>, String> {
     let root = PathBuf::from(path)
         .canonicalize()
         .map_err(|_| "Le dossier sélectionné est introuvable ou inaccessible.".to_string())?;
@@ -547,7 +823,7 @@ fn list_pdf_files(path: String) -> Result<Vec<PdfFile>, String> {
     }
 
     let mut files = Vec::new();
-    let mut pending = vec![root];
+    let mut pending = vec![root.clone()];
     while let Some(directory) = pending.pop() {
         let Ok(entries) = fs::read_dir(directory) else {
             continue;
@@ -564,15 +840,19 @@ fn list_pdf_files(path: String) -> Result<Vec<PdfFile>, String> {
                 continue;
             }
             let file_path = entry.path();
-            let is_pdf = file_path
+            let is_supported = file_path
                 .extension()
                 .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
-            if file_type.is_file() && is_pdf {
-                files.push(PdfFile {
+                .is_some_and(supported_document_extension);
+            if file_type.is_file() && is_supported {
+                let relative_path = file_path
+                    .strip_prefix(&root)
+                    .map_err(|_| "Chemin de document invalide.".to_string())?;
+                files.push(DocumentFile {
                     name: entry.file_name().to_string_lossy().into_owned(),
                     bytes: entry.metadata().map(|metadata| metadata.len()).unwrap_or(0),
                     path: file_path.display().to_string(),
+                    relative_path: relative_path.to_string_lossy().replace('\\', "/"),
                 });
             }
         }
@@ -602,8 +882,61 @@ pub fn run() {
             get_ocr_text,
             index_project,
             ask_project,
-            list_pdf_files
+            list_document_files,
+            create_organization_plan,
+            apply_organization_plan,
+            undo_organization
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn organization_copy_keeps_source_and_can_be_undone() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("clairdoc-organization-{unique}"));
+        let source_root = base.join("source");
+        let output_root = base.join("output");
+        fs::create_dir_all(source_root.join("incoming")).expect("source directory");
+        fs::create_dir_all(&output_root).expect("output directory");
+        let source = source_root.join("incoming").join("scan.txt");
+        fs::write(&source, b"document original").expect("source file");
+
+        let result = apply_organization_plan(
+            source_root.display().to_string(),
+            output_root.display().to_string(),
+            vec![OrganizationEntry {
+                job_id: "job-1".to_string(),
+                original_filename: "scan.txt".to_string(),
+                source_relative_path: "incoming/scan.txt".to_string(),
+                suggested_path: "Factures/2026/2026-01-01_facture.txt".to_string(),
+                category: "Factures".to_string(),
+                document_date: Some("2026-01-01".to_string()),
+                organization: None,
+                reason: "test".to_string(),
+            }],
+        )
+        .expect("apply plan");
+
+        assert!(source.is_file());
+        assert!(output_root
+            .join("Factures/2026/2026-01-01_facture.txt")
+            .is_file());
+        let undone = undo_organization(result.manifest_path).expect("undo");
+        assert_eq!(undone.removed, 1);
+        assert!(source.is_file());
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn organization_rejects_parent_traversal() {
+        assert!(safe_relative_path("../outside.txt").is_err());
+    }
 }

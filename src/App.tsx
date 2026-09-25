@@ -468,7 +468,11 @@ function App() {
   const pendingJobs = projectJobs.filter(
     (job) => job.status === "queued" || job.status === "running",
   );
-  const documentsReady = completedJobs.length > 0 || ocr.status === "completed";
+  const importStillSending = batch.status === "discovering" || batch.status === "uploading";
+  const documentsReady =
+    (completedJobs.length > 0 || ocr.status === "completed") &&
+    pendingJobs.length === 0 &&
+    !importStillSending;
 
   return (
     <div className="app-shell">

@@ -35,7 +35,12 @@ Application de bureau destinée à aider les utilisateurs à inventorier, recher
 - mode sombre persistant ;
 - page de paramètres détaillant les modèles IA, l'OCR, le stockage et les limites ;
 - cartographie en arbre avec filtres par recherche, document et type de relation ;
-- aucun déplacement ou renommage des originaux ; un PDF n'est envoyé au serveur qu'après une action explicite.
+- catégories de l'arbre repliables et ouverture d'un document par clic ;
+- choix persistant du modèle de réponse entre Luna, Terra et Sol ;
+- adresse du serveur affichée en lecture seule dans l'interface ;
+- validation d'une architecture en mode copie ou déplacement sécurisé ;
+- utilisation automatique du PDF OCRisé dans l'architecture validée ;
+- aucun déplacement des originaux sans sélection explicite du mode correspondant et confirmation ; un PDF n'est envoyé au serveur qu'après une action explicite.
 
 ## Développement
 
@@ -84,6 +89,8 @@ npm run tauri dev
 Ces variables sont lues par le backend Rust et ne portent pas le préfixe `VITE_` : elles ne sont donc pas intégrées au JavaScript. Le fichier `.env` est ignoré par Git. Dans une application installée, la configuration enregistrée dans le dossier de données de l'application reste le mécanisme normal.
 
 La clé OpenAI ne doit pas être placée ici. `OPENAI_API_KEY` appartient exclusivement au fichier `.env` de ClairDoc Server.
+
+Le mode « Copier » reste le comportement par défaut et préserve tous les originaux. Le mode « Déplacer et nettoyer » nécessite une confirmation supplémentaire : il écrit et vérifie la nouvelle architecture, conserve une sauvegarde de sécurité dans `.clairdoc/originals`, puis retire les anciens fichiers de leur emplacement source. Les PDF classés sont les versions OCRisées produites par le serveur ; les autres formats restent dans leur format natif.
 
 Par défaut, utilisez `http://127.0.0.1:8787` lorsque les deux programmes fonctionnent dans la même instance WSL. Si le serveur fonctionne sur une autre machine, utilisez son adresse privée et configurez `CLAIRDOC_HOST=0.0.0.0` côté serveur. N'exposez pas directement l'API sur Internet.
 

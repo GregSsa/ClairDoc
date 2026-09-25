@@ -27,6 +27,7 @@ export type RuntimeInfo = {
   maxIndexTokens: number;
   openaiConfigured: boolean;
   tlsEnabled: boolean;
+  modelOptions: string[];
 };
 
 export type OcrJob = {
@@ -175,8 +176,16 @@ export function openProjectFolder(path: string) {
   return invoke<void>("open_project_folder", { path });
 }
 
+export function openProjectFile(rootPath: string, relativePath: string) {
+  return invoke<void>("open_project_file", { rootPath, relativePath });
+}
+
 export function getRuntimeInfo() {
   return invoke<RuntimeInfo>("get_runtime_info");
+}
+
+export function updateRuntimeModel(llmModel: string) {
+  return invoke<RuntimeInfo>("update_runtime_model", { llmModel });
 }
 
 export function listRemoteProjects() {
@@ -255,8 +264,9 @@ export function applyOrganizationPlan(
   rootPath: string,
   outputPath: string,
   entries: OrganizationEntry[],
+  mode: "copy" | "move",
 ) {
-  return invoke<ApplyResult>("apply_organization_plan", { rootPath, outputPath, entries });
+  return invoke<ApplyResult>("apply_organization_plan", { rootPath, outputPath, entries, mode });
 }
 
 export function undoOrganization(manifestPath: string) {

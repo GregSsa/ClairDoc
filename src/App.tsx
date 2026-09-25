@@ -4,7 +4,6 @@ import { open } from "@tauri-apps/plugin-dialog";
 import {
   applyOrganizationPlan,
   askProject,
-  configureServer,
   createOrganizationPlan,
   createRemoteProject,
   createServerBackup,
@@ -21,6 +20,7 @@ import {
   listRemoteProjects,
   pauseProjectOcr,
   openProjectFolder,
+  openProjectFile,
   retryIndexTask,
   DocumentFile,
   DocumentLibrary,
@@ -39,6 +39,7 @@ import {
   retryOcrJob,
   startIndexProject,
   updateRemoteProject,
+  updateRuntimeModel,
   undoOrganization,
 } from "./server";
 import "./App.css";
@@ -165,8 +166,6 @@ function ShieldIcon() {
 function App() {
   const [scan, setScan] = useState<ScanState>({ status: "idle" });
   const [serverUrl, setServerUrl] = useState("http://127.0.0.1:8787");
-  const [apiKey, setApiKey] = useState("");
-  const [hasSavedKey, setHasSavedKey] = useState(false);
   const [connection, setConnection] = useState<ConnectionState>({ status: "loading" });
   const [project, setProject] = useState<ProjectState>({ status: "idle" });
   const [projects, setProjects] = useState<RemoteProject[]>([]);
@@ -192,6 +191,9 @@ function App() {
   const [relationSearch, setRelationSearch] = useState("");
   const [relationKind, setRelationKind] = useState("Tous");
   const [focusDocument, setFocusDocument] = useState("Tous");
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
+  const [libraryRefresh, setLibraryRefresh] = useState(0);
+  const [organizationMode, setOrganizationMode] = useState<"copy" | "move">("copy");
   const connected = connection.status === "connected";
 
   useEffect(() => {
@@ -200,7 +202,6 @@ function App() {
       .then(async (config) => {
         if (!active) return;
         setServerUrl(config.serverUrl);
-        setHasSavedKey(config.configured);
         if (!config.configured) {
           setConnection({ status: "missing" });
           return;
@@ -377,28 +378,12 @@ function App() {
     return () => {
       active = false;
     };
-  }, [activeView, project, projectJobs.length, rag.status]);
+  }, [activeView, project, projectJobs.length, rag.status, libraryRefresh]);
 
   useEffect(() => {
     if (!connected || activeView !== "settings") return;
     getRuntimeInfo().then(setRuntimeInfo).catch(() => setRuntimeInfo(null));
   }, [activeView, connected]);
-
-  async function saveServer(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setConnection({ status: "testing" });
-    try {
-      const result = await configureServer(serverUrl, apiKey);
-      setApiKey("");
-      setHasSavedKey(true);
-      setConnection({ status: "connected", version: result.version });
-    } catch (error) {
-      setConnection({
-        status: "error",
-        message: errorMessage(error, "La configuration n’a pas pu être enregistrée."),
-      });
-    }
-  }
 
   function selectProject(selected?: RemoteProject) {
     setProject(selected ? { status: "ready", project: selected } : { status: "idle" });
@@ -454,6 +439,36 @@ function App() {
     } finally {
       setProjectMenu(null);
     }
+  }
+
+  async function openTreeDocument(document: LibraryDocument) {
+    if (project.status !== "ready" || !project.project.sourceRoot) {
+      window.alert("Le dossier source de ce projet n’est pas disponible sur cet ordinateur.");
+      return;
+    }
+    try {
+      await openProjectFile(project.project.sourceRoot, document.sourceRelativePath);
+    } catch (error) {
+      window.alert(errorMessage(error, "Impossible d’ouvrir ce document."));
+    }
+  }
+
+  async function selectRuntimeModel(model: string) {
+    try {
+      const updated = await updateRuntimeModel(model);
+      setRuntimeInfo(updated);
+    } catch (error) {
+      window.alert(errorMessage(error, "Impossible de changer le modèle."));
+    }
+  }
+
+  function toggleCategory(category: string) {
+    setCollapsedCategories((current) => {
+      const next = new Set(current);
+      if (next.has(category)) next.delete(category);
+      else next.add(category);
+      return next;
+    });
   }
 
   async function quickCreateProject(event: FormEvent<HTMLFormElement>) {
@@ -711,9 +726,17 @@ function App() {
     const plan = organization.plan;
     const entries = plan.entries.filter((entry) => selectedPlanEntries.includes(entry.job_id));
     if (entries.length === 0) return;
+    if (organizationMode === "move" && !window.confirm(
+      "Mode déplacement : les fichiers originaux seront retirés de leur emplacement actuel après création et vérification de la nouvelle architecture. Une sauvegarde de sécurité permettra l’annulation. Continuer ?",
+    )) return;
     setOrganization({ status: "applying", plan });
     try {
-      const result = await applyOrganizationPlan(scan.summary.rootPath, outputPath, entries);
+      const result = await applyOrganizationPlan(
+        scan.summary.rootPath,
+        outputPath,
+        entries,
+        organizationMode,
+      );
       setOrganization({
         status: "applied",
         plan,
@@ -839,7 +862,7 @@ function App() {
             ["assistant", "✦", "Assistant"],
             ["import", "+", "Ajouter"],
           ] as const).map(([view, icon, label]) => (
-            <button key={view} className={activeView === view ? "active" : ""} onClick={() => setActiveView(view)}>
+            <button key={view} className={activeView === view ? "active" : ""} onClick={() => { setActiveView(view); if (view === "relations") setLibraryRefresh((value) => value + 1); }}>
               <span aria-hidden="true">{icon}</span>{label}
             </button>
           ))}
@@ -910,7 +933,7 @@ function App() {
 
         {activeView === "relations" && (
           <section className="relations-view">
-            <div className="page-heading compact"><div><p className="eyebrow">Cartographie</p><h1>Arbre du projet</h1><p>Explorez les catégories et limitez l’arbre aux documents reliés à une recherche ou à un document précis.</p></div></div>
+            <div className="page-heading compact"><div><p className="eyebrow">Cartographie</p><h1>Arbre du projet</h1><p>Explorez les catégories et limitez l’arbre aux documents reliés à une recherche ou à un document précis.</p></div>{project.status === "ready" && <button className="secondary-button" onClick={() => setLibraryRefresh((value) => value + 1)}>Actualiser</button>}</div>
             {project.status !== "ready" ? <div className="blank-panel"><h2>Aucun projet sélectionné</h2><button className="secondary-button" onClick={() => setActiveView("home")}>Choisir un projet</button></div> : (
               <>
                 <div className="relation-toolbar">
@@ -922,10 +945,10 @@ function App() {
                 {libraryData && <div className="relation-canvas">
                   <div className="tree-root"><span className="tree-root-icon"><FolderIcon /></span><div><strong>{project.project.name}</strong><small>{relationDocuments.length} document(s) · {visibleRelationships.length} lien(s) affiché(s)</small></div></div>
                   <div className="tree-groups">
-                    {relationGroups.map(([category, documents]) => <section className="tree-branch" key={category}><div className="tree-category"><span /> <strong>{category}</strong><small>{documents.length}</small></div><div className="tree-documents">{documents.map((document) => {
+                    {relationGroups.map(([category, documents]) => <section className={`tree-branch ${collapsedCategories.has(category) ? "collapsed" : ""}`} key={category}><button className="tree-category" onClick={() => toggleCategory(category)} aria-expanded={!collapsedCategories.has(category)}><span /> <strong>{category}</strong><small>{documents.length}</small><b>{collapsedCategories.has(category) ? "+" : "−"}</b></button>{!collapsedCategories.has(category) && <div className="tree-documents">{documents.map((document) => {
                       const documentLinks = visibleRelationships.filter((relationship) => relationship.sourceJobId === document.jobId || relationship.targetJobId === document.jobId);
-                      return <article className={`tree-document ${document.jobId === focusDocument ? "focused" : ""}`} key={document.jobId}><div className="tree-document-title"><span>▤</span><div><strong>{document.name}</strong><small>{document.organization ?? document.sourceRelativePath}</small></div></div><div className="tree-links">{documentLinks.slice(0, 4).map((link, index) => <span key={`${link.sourceJobId}-${link.targetJobId}-${link.kind}-${index}`}>{link.kind === "organization" ? "Organisme" : link.kind === "person" ? "Personne" : link.kind === "category" ? "Catégorie" : "Année"} · {link.label}</span>)}</div></article>;
-                    })}</div></section>)}
+                      return <button className={`tree-document ${document.jobId === focusDocument ? "focused" : ""}`} key={document.jobId} onClick={() => openTreeDocument(document)}><div className="tree-document-title"><span>▤</span><div><strong>{document.name}</strong><small>{document.organization ?? document.sourceRelativePath}</small></div></div><div className="tree-links">{documentLinks.filter((link) => link.kind !== "category").slice(0, 4).map((link, index) => <span key={`${link.sourceJobId}-${link.targetJobId}-${link.kind}-${index}`}>{link.kind === "organization" ? "Organisme" : link.kind === "person" ? "Personne" : "Année"} · {link.label}</span>)}</div></button>;
+                    })}</div>}</section>)}
                     {relationGroups.length === 0 && <div className="no-results">Aucun document relié ne correspond à ces filtres.</div>}
                   </div>
                 </div>}
@@ -961,19 +984,7 @@ function App() {
               <span aria-hidden="true" />{connected ? `Connecté · v${connection.version}` : "Non connecté"}
             </span>
           </div>
-          <form className="server-form" onSubmit={saveServer}>
-            <label>
-              Adresse du serveur
-              <input type="url" value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} placeholder="http://127.0.0.1:8787" required />
-            </label>
-            <label>
-              Clé ClairDoc
-              <input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={hasSavedKey ? "Clé déjà enregistrée" : "Collez CLAIRDOC_API_KEY"} autoComplete="new-password" minLength={16} required />
-            </label>
-            <button className="primary-button compact-button" disabled={connection.status === "testing"}>
-              {connection.status === "testing" ? "Connexion…" : "Enregistrer et tester"}
-            </button>
-          </form>
+          <div className="server-readonly"><div><span>Adresse configurée</span><strong>{serverUrl}</strong></div><button className="secondary-button small-button" type="button" disabled={connection.status === "testing"} onClick={retestServer}>{connection.status === "testing" ? "Test…" : "Tester la connexion"}</button></div>
           <div className="server-feedback" aria-live="polite">
             {connection.status === "error" && <p className="inline-error">{connection.message}</p>}
             {connected && (
@@ -986,7 +997,7 @@ function App() {
                 {backup.status === "error" && <small className="inline-error">{backup.message}</small>}
               </div>
             )}
-            {hasSavedKey && !connected && connection.status !== "testing" && <button className="text-button" type="button" onClick={retestServer}>Retester la clé enregistrée</button>}
+            {!connected && connection.status !== "testing" && <p>L’adresse et la clé sont chargées depuis la configuration locale de l’application.</p>}
           </div>
           {connected && projects.length > 0 && (
             <label className="project-picker">
@@ -1009,7 +1020,8 @@ function App() {
           <section className="settings-grid">
             <article className="settings-panel">
               <div className="settings-title"><span>✦</span><div><h2>Intelligence artificielle</h2><p>Modèles utilisés par le serveur pour ce poste.</p></div></div>
-              <dl><div><dt>Modèle de réponse</dt><dd>{runtimeInfo?.llmModel ?? "—"}</dd></div><div><dt>Modèle d’embeddings</dt><dd>{runtimeInfo?.embeddingModel ?? "—"}</dd></div><div><dt>Dimensions</dt><dd>{runtimeInfo?.embeddingDimensions ?? "—"}</dd></div><div><dt>Clé OpenAI</dt><dd>{runtimeInfo?.openaiConfigured ? "Configurée" : "Non configurée"}</dd></div></dl>
+              <label className="model-picker">Modèle de réponse<select value={runtimeInfo?.llmModel ?? ""} disabled={!runtimeInfo} onChange={(event) => selectRuntimeModel(event.target.value)}>{runtimeInfo?.modelOptions.map((model) => <option key={model} value={model}>{model === "gpt-6-luna" ? "Luna · rapide et économique" : model === "gpt-5.6-terra" ? "Terra · équilibré" : "Sol · plus puissant"}</option>)}</select></label>
+              <dl><div><dt>Modèle actif</dt><dd>{runtimeInfo?.llmModel ?? "—"}</dd></div><div><dt>Modèle d’embeddings</dt><dd>{runtimeInfo?.embeddingModel ?? "—"}</dd></div><div><dt>Dimensions</dt><dd>{runtimeInfo?.embeddingDimensions ?? "—"}</dd></div><div><dt>Clé OpenAI</dt><dd>{runtimeInfo?.openaiConfigured ? "Configurée" : "Non configurée"}</dd></div></dl>
               <p className="settings-explanation">Les embeddings servent à retrouver les passages pertinents. Le modèle de réponse reçoit uniquement ces extraits, pas l’intégralité de vos dossiers.</p>
             </article>
             <article className="settings-panel">
@@ -1164,8 +1176,8 @@ function App() {
                             </article>
                           ))}
                         </div>
-                        {organization.status !== "applied" && <button className="primary-button" disabled={organization.status === "applying" || selectedPlanEntries.length === 0} onClick={applyPlan}>{organization.status === "applying" ? "Copie en cours…" : "Valider et copier dans un nouveau dossier"}</button>}
-                        {organization.status === "applied" && <div className="organization-success"><strong>{organization.copied} copie(s) classée(s)</strong><span>Le manifeste permet une annulation sûre tant que les copies ne sont pas modifiées.</span><button className="secondary-button" onClick={undoLastOrganization}>Annuler cette copie</button></div>}
+                        {organization.status !== "applied" && <><div className="organization-mode"><label className={organizationMode === "copy" ? "selected" : ""}><input type="radio" name="organization-mode" checked={organizationMode === "copy"} onChange={() => setOrganizationMode("copy")} /><strong>Copier</strong><span>Conserver les originaux à leur emplacement actuel.</span></label><label className={organizationMode === "move" ? "selected danger-choice" : ""}><input type="radio" name="organization-mode" checked={organizationMode === "move"} onChange={() => setOrganizationMode("move")} /><strong>Déplacer et nettoyer</strong><span>Utiliser les PDF OCRisés, créer l’architecture puis retirer les anciens fichiers.</span></label></div><button className="primary-button" disabled={organization.status === "applying" || selectedPlanEntries.length === 0} onClick={applyPlan}>{organization.status === "applying" ? "Classement en cours…" : organizationMode === "copy" ? "Valider et copier" : "Valider et déplacer"}</button></>}
+                        {organization.status === "applied" && <div className="organization-success"><strong>{organization.copied} document(s) classé(s)</strong><span>Le manifeste et la sauvegarde de sécurité permettent une annulation contrôlée tant que les nouveaux fichiers ne sont pas modifiés.</span><button className="secondary-button" onClick={undoLastOrganization}>Annuler ce classement</button></div>}
                       </div>
                     )}
                   </section>

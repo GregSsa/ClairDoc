@@ -52,6 +52,7 @@ struct RuntimeInfoResponse {
     max_index_tokens: u64,
     openai_configured: bool,
     tls_enabled: bool,
+    model_options: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -93,12 +94,20 @@ struct ManifestEntry {
     source: String,
     destination: String,
     sha256: String,
+    #[serde(default)]
+    source_backup: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
 struct OperationManifest {
     created_at: u64,
+    #[serde(default = "default_copy_mode")]
+    mode: String,
     entries: Vec<ManifestEntry>,
+}
+
+fn default_copy_mode() -> String {
+    "copy".to_string()
 }
 
 #[derive(Serialize)]
@@ -448,14 +457,46 @@ fn open_project_folder(path: String) -> Result<(), String> {
     }
     #[cfg(target_os = "linux")]
     {
-        Command::new("xdg-open")
-            .arg(&directory)
-            .spawn()
-            .map_err(|error| format!("Impossible d’ouvrir l’explorateur : {error}"))?;
-        return Ok(());
+        return open_linux_path(&directory);
     }
     #[allow(unreachable_code)]
     Err("L’ouverture du dossier est disponible sous Linux.".to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn open_linux_path(path: &Path) -> Result<(), String> {
+    for program in ["gio", "xdg-open"] {
+        let result = if program == "gio" {
+            Command::new(program).arg("open").arg(path).spawn()
+        } else {
+            Command::new(program).arg(path).spawn()
+        };
+        if result.is_ok() {
+            return Ok(());
+        }
+    }
+    Err("Aucun explorateur compatible n’est installé (gio ou xdg-open).".to_string())
+}
+
+#[tauri::command]
+fn open_project_file(root_path: String, relative_path: String) -> Result<(), String> {
+    let root = PathBuf::from(root_path)
+        .canonicalize()
+        .map_err(|_| "Le dossier source est inaccessible.".to_string())?;
+    let relative = safe_relative_path(&relative_path)?;
+    let file = root
+        .join(relative)
+        .canonicalize()
+        .map_err(|_| "Le document est inaccessible.".to_string())?;
+    if !file.starts_with(&root) || !file.is_file() {
+        return Err("Le document demandé est invalide.".to_string());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return open_linux_path(&file);
+    }
+    #[allow(unreachable_code)]
+    Err("L’ouverture du document est disponible sous Linux.".to_string())
 }
 
 #[tauri::command]
@@ -467,6 +508,22 @@ async fn get_runtime_info(app: AppHandle) -> Result<RuntimeInfoResponse, String>
         .send()
         .await
         .map_err(|error| format!("Informations serveur indisponibles : {error}"))?;
+    parse_api_response(response).await
+}
+
+#[tauri::command]
+async fn update_runtime_model(
+    app: AppHandle,
+    llm_model: String,
+) -> Result<RuntimeInfoResponse, String> {
+    let config = read_server_config(&app)?;
+    let response = api_client(Duration::from_secs(20))?
+        .patch(format!("{}/api/v1/runtime", config.server_url))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .json(&serde_json::json!({ "llm_model": llm_model }))
+        .send()
+        .await
+        .map_err(|error| format!("Changement de modèle impossible : {error}"))?;
     parse_api_response(response).await
 }
 
@@ -815,12 +872,16 @@ fn available_destination(path: PathBuf) -> Result<PathBuf, String> {
     Err("Trop de fichiers portent déjà le même nom dans la destination.".to_string())
 }
 
-#[tauri::command]
-fn apply_organization_plan(
+async fn apply_organization_plan_inner(
+    app: Option<&AppHandle>,
     root_path: String,
     output_path: String,
     entries: Vec<OrganizationEntry>,
+    mode: String,
 ) -> Result<ApplyResult, String> {
+    if !matches!(mode.as_str(), "copy" | "move") {
+        return Err("Mode de classement invalide.".to_string());
+    }
     let root = PathBuf::from(root_path)
         .canonicalize()
         .map_err(|_| "Le dossier source est inaccessible.".to_string())?;
@@ -831,6 +892,14 @@ fn apply_organization_plan(
         return Err("Choisissez un dossier de destination séparé du dossier source.".to_string());
     }
 
+    let created_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "Horloge système invalide.".to_string())?
+        .as_secs();
+    let backup_root = output
+        .join(".clairdoc")
+        .join("originals")
+        .join(created_at.to_string());
     let mut prepared = Vec::new();
     for entry in entries {
         let source_relative = safe_relative_path(&entry.source_relative_path)?;
@@ -849,13 +918,57 @@ fn apply_organization_plan(
             fs::create_dir_all(parent)
                 .map_err(|error| format!("Création du dossier impossible : {error}"))?;
         }
-        prepared.push((source, destination));
+        prepared.push((entry, source, destination));
     }
 
     let mut manifest_entries = Vec::new();
     let mut created_paths = Vec::new();
-    for (source, destination) in prepared {
-        if let Err(error) = fs::copy(&source, &destination) {
+    let has_pdf = prepared.iter().any(|(_, source, _)| {
+        source
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("pdf"))
+    });
+    let remote = if has_pdf {
+        let app = app.ok_or_else(|| "Application ClairDoc indisponible.".to_string())?;
+        Some((
+            read_server_config(app)?,
+            api_client(Duration::from_secs(7200))?,
+        ))
+    } else {
+        None
+    };
+    for (entry, source, destination) in &prepared {
+        let is_pdf = source
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("pdf"));
+        let write_result = if is_pdf {
+            let (config, client) = remote.as_ref().expect("PDF client configured");
+            let response = client
+                .get(format!(
+                    "{}/api/v1/ocr/jobs/{}/document",
+                    config.server_url, entry.job_id
+                ))
+                .header("X-ClairDoc-Key", &config.api_key)
+                .send()
+                .await
+                .map_err(|error| format!("Téléchargement du PDF OCRisé impossible : {error}"))?;
+            if !response.status().is_success() {
+                return Err(format!(
+                    "La version OCRisée de {} n’est pas disponible.",
+                    entry.original_filename
+                ));
+            }
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|error| format!("Lecture du PDF OCRisé impossible : {error}"))?;
+            fs::write(destination, bytes)
+        } else {
+            fs::copy(source, destination).map(|_| ())
+        };
+        if let Err(error) = write_result {
             for created in &created_paths {
                 let _ = fs::remove_file(created);
             }
@@ -865,7 +978,7 @@ fn apply_organization_plan(
             ));
         }
         created_paths.push(destination.clone());
-        let sha256 = match sha256_file(&destination) {
+        let sha256 = match sha256_file(destination) {
             Ok(value) => value,
             Err(error) => {
                 for created in &created_paths {
@@ -878,15 +991,43 @@ fn apply_organization_plan(
             source: source.display().to_string(),
             destination: destination.display().to_string(),
             sha256,
+            source_backup: None,
         });
     }
 
-    let created_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| "Horloge système invalide.".to_string())?
-        .as_secs();
+    if mode == "move" {
+        fs::create_dir_all(&backup_root).map_err(|error| {
+            format!("Création de la sauvegarde de sécurité impossible : {error}")
+        })?;
+        for (index, (_, source, _)) in prepared.iter().enumerate() {
+            let backup = backup_root.join(format!(
+                "{index:06}-{}",
+                source.file_name().unwrap_or_default().to_string_lossy()
+            ));
+            fs::copy(source, &backup).map_err(|error| {
+                format!("Sauvegarde de {} impossible : {error}", source.display())
+            })?;
+            manifest_entries[index].source_backup = Some(backup.display().to_string());
+        }
+        let mut removed_sources: Vec<(PathBuf, PathBuf)> = Vec::new();
+        for (index, (_, source, _)) in prepared.iter().enumerate() {
+            if let Err(error) = fs::remove_file(source) {
+                for (removed, backup) in removed_sources {
+                    let _ = fs::copy(backup, removed);
+                }
+                return Err(format!(
+                    "Nettoyage de {} impossible : {error}",
+                    source.display()
+                ));
+            }
+            let backup = PathBuf::from(manifest_entries[index].source_backup.as_ref().unwrap());
+            removed_sources.push((source.clone(), backup));
+        }
+    }
+
     let manifest = OperationManifest {
         created_at,
+        mode,
         entries: manifest_entries,
     };
     let manifest_directory = output.join(".clairdoc").join("operations");
@@ -903,6 +1044,17 @@ fn apply_organization_plan(
         manifest_path: manifest_path.display().to_string(),
         copied: manifest.entries.len(),
     })
+}
+
+#[tauri::command]
+async fn apply_organization_plan(
+    app: AppHandle,
+    root_path: String,
+    output_path: String,
+    entries: Vec<OrganizationEntry>,
+    mode: String,
+) -> Result<ApplyResult, String> {
+    apply_organization_plan_inner(Some(&app), root_path, output_path, entries, mode).await
 }
 
 #[tauri::command]
@@ -934,8 +1086,28 @@ fn undo_organization(manifest_path: String) -> Result<UndoResult, String> {
             skipped += 1;
             continue;
         }
+        let restoration = if manifest.mode == "move" {
+            let source = PathBuf::from(&entry.source);
+            let backup = entry.source_backup.as_deref().map(PathBuf::from);
+            if source.exists() || backup.as_ref().is_none_or(|path| !path.is_file()) {
+                skipped += 1;
+                continue;
+            }
+            Some((source, backup.expect("checked backup")))
+        } else {
+            None
+        };
         fs::remove_file(&canonical)
             .map_err(|error| format!("Suppression de la copie impossible : {error}"))?;
+        if let Some((source, backup)) = restoration {
+            if let Some(parent) = source.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|error| format!("Restauration du dossier impossible : {error}"))?;
+            }
+            fs::copy(&backup, &source)
+                .map_err(|error| format!("Restauration de l’original impossible : {error}"))?;
+            let _ = fs::remove_file(backup);
+        }
         removed += 1;
     }
     Ok(UndoResult { removed, skipped })
@@ -1145,7 +1317,9 @@ pub fn run() {
             update_remote_project,
             delete_remote_project,
             open_project_folder,
+            open_project_file,
             get_runtime_info,
+            update_runtime_model,
             list_remote_projects,
             submit_ocr_job,
             get_ocr_job,
@@ -1189,7 +1363,8 @@ mod tests {
         let source = source_root.join("incoming").join("scan.txt");
         fs::write(&source, b"document original").expect("source file");
 
-        let result = apply_organization_plan(
+        let result = tauri::async_runtime::block_on(apply_organization_plan_inner(
+            None,
             source_root.display().to_string(),
             output_root.display().to_string(),
             vec![OrganizationEntry {
@@ -1202,7 +1377,8 @@ mod tests {
                 organization: None,
                 reason: "test".to_string(),
             }],
-        )
+            "copy".to_string(),
+        ))
         .expect("apply plan");
 
         assert!(source.is_file());
@@ -1218,5 +1394,47 @@ mod tests {
     #[test]
     fn organization_rejects_parent_traversal() {
         assert!(safe_relative_path("../outside.txt").is_err());
+    }
+
+    #[test]
+    fn organization_move_removes_then_restores_source() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("clairdoc-move-{unique}"));
+        let source_root = base.join("source");
+        let output_root = base.join("output");
+        fs::create_dir_all(&source_root).expect("source directory");
+        fs::create_dir_all(&output_root).expect("output directory");
+        let source = source_root.join("scan.txt");
+        fs::write(&source, b"document original").expect("source file");
+        let result = tauri::async_runtime::block_on(apply_organization_plan_inner(
+            None,
+            source_root.display().to_string(),
+            output_root.display().to_string(),
+            vec![OrganizationEntry {
+                job_id: "job-2".to_string(),
+                original_filename: "scan.txt".to_string(),
+                source_relative_path: "scan.txt".to_string(),
+                suggested_path: "Autres/scan.txt".to_string(),
+                category: "Autres".to_string(),
+                document_date: None,
+                organization: None,
+                reason: "test".to_string(),
+            }],
+            "move".to_string(),
+        ))
+        .expect("move plan");
+
+        assert!(!source.exists());
+        assert!(output_root.join("Autres/scan.txt").is_file());
+        let undone = undo_organization(result.manifest_path).expect("undo move");
+        assert_eq!(undone.removed, 1);
+        assert_eq!(
+            fs::read(&source).expect("restored source"),
+            b"document original"
+        );
+        let _ = fs::remove_dir_all(base);
     }
 }

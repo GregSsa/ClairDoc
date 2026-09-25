@@ -73,6 +73,8 @@ h1 { margin: 0; color: #132b26; font-size: clamp(34px, 5vw, 50px); line-height: 
 .compact-button { min-height: 45px; padding: 0 17px; font-size: 14px; }
 .server-feedback { min-height: 22px; margin-top: 11px; }
 .server-feedback p { margin: 0; color: #517068; font-size: 13px; }
+.backup-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; }
+.backup-controls small { flex-basis: 100%; color: #62736e; overflow-wrap: anywhere; }
 .inline-error { margin: 10px 0 0 !important; color: #a54237 !important; font-size: 13px; }
 .align-right { text-align: right; }
 .text-button { padding: 0; border: 0; color: #1f7d6a; background: transparent; font-weight: 750; cursor: pointer; }
@@ -189,6 +191,10 @@ h1 { margin: 0; color: #132b26; font-size: clamp(34px, 5vw, 50px); line-height: 
 .rag-heading h3 { margin: 0; color: #263850; font-size: 18px; }
 .rag-heading p { margin: 7px 0 0; color: #687386; font-size: 14px; }
 .index-summary { margin: 18px 0 0; color: #536777; font-size: 13px; font-weight: 650; }
+.index-estimate { margin-top: 18px; padding: 16px; display: grid; gap: 8px; border: 1px solid #d9ddeb; border-radius: 14px; background: #fff; }
+.index-estimate p { margin: 0; color: #536777; font-size: 14px; }
+.index-estimate small { color: #748092; }
+.index-estimate .primary-button { justify-self: start; margin-top: 4px; }
 .question-form { margin-top: 16px; display: grid; gap: 10px; }
 .question-form label { color: #334d47; font-size: 13px; font-weight: 750; }
 .question-form textarea {

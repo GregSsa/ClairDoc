@@ -38,6 +38,32 @@ export type IndexResult = {
   embeddingModel: string;
 };
 
+export type IndexEstimate = {
+  projectId: string;
+  documentsTotal: number;
+  documentsToEmbed: number;
+  documentsReused: number;
+  estimatedTokens: number;
+  estimatedCostUsd: number;
+  pricePerMillionTokensUsd: number;
+  embeddingModel: string;
+};
+
+export type IndexTask = {
+  id: string;
+  projectId: string;
+  status: "queued" | "running" | "completed" | "failed";
+  estimate: IndexEstimate | null;
+  result: IndexResult | null;
+  error: string | null;
+};
+
+export type BackupResult = {
+  path: string;
+  sizeBytes: number;
+  createdAt: string;
+};
+
 export type Citation = {
   document_name: string;
   job_id: string;
@@ -134,6 +160,26 @@ export function retryOcrJob(jobId: string) {
 
 export function indexProject(projectId: string) {
   return invoke<IndexResult>("index_project", { projectId });
+}
+
+export function estimateProjectIndex(projectId: string) {
+  return invoke<IndexEstimate>("estimate_project_index", { projectId });
+}
+
+export function startIndexProject(projectId: string) {
+  return invoke<IndexTask>("start_index_project", { projectId });
+}
+
+export function getIndexTask(taskId: string) {
+  return invoke<IndexTask>("get_index_task", { taskId });
+}
+
+export function retryIndexTask(taskId: string) {
+  return invoke<IndexTask>("retry_index_task", { taskId });
+}
+
+export function createServerBackup() {
+  return invoke<BackupResult>("create_server_backup");
 }
 
 export function askProject(projectId: string, question: string) {

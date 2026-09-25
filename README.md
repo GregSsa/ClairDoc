@@ -22,6 +22,9 @@ Application de bureau destinée à aider les utilisateurs à inventorier, recher
 - prévisualisation modifiable du classement proposé ;
 - copie validée vers un dossier séparé, sans toucher aux originaux ;
 - résolution des conflits de noms et annulation contrôlée par empreinte SHA-256.
+- estimation des tokens et du coût avant confirmation de l'indexation ;
+- suivi d'une indexation persistante en arrière-plan et relance après échec ;
+- création manuelle d'une sauvegarde ZIP des métadonnées du serveur ;
 - aucun déplacement ou renommage des originaux ; un PDF n'est envoyé au serveur qu'après une action explicite.
 
 ## Développement
@@ -73,3 +76,5 @@ Ces variables sont lues par le backend Rust et ne portent pas le préfixe `VITE_
 La clé OpenAI ne doit pas être placée ici. `OPENAI_API_KEY` appartient exclusivement au fichier `.env` de ClairDoc Server.
 
 Par défaut, utilisez `http://127.0.0.1:8787` lorsque les deux programmes fonctionnent dans la même instance WSL. Si le serveur fonctionne sur une autre machine, utilisez son adresse privée et configurez `CLAIRDOC_HOST=0.0.0.0` côté serveur. N'exposez pas directement l'API sur Internet.
+
+Avant la création des embeddings, l'application affiche une estimation indicative du nombre de tokens et du coût. L'utilisateur doit confirmer explicitement. Le serveur traite ensuite l'indexation dans une tâche persistante : fermer l'application Tauri n'annule donc pas le travail. Le bouton « Sauvegarder les métadonnées » archive projets, index, textes extraits, plans et historique des tâches sans dupliquer les PDF volumineux.

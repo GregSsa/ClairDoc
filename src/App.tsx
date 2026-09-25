@@ -7,17 +7,22 @@ import {
   configureServer,
   createOrganizationPlan,
   createRemoteProject,
+  createServerBackup,
+  estimateProjectIndex,
+  getIndexTask,
   getOcrJob,
   getOcrText,
   getServerConfig,
-  indexProject,
   listDocumentFiles,
   listProjectJobs,
   listRemoteProjects,
   pauseProjectOcr,
+  retryIndexTask,
   DocumentFile,
   AskResult,
   IndexResult,
+  IndexEstimate,
+  IndexTask,
   OcrJob,
   OrganizationPlan,
   RemoteProject,
@@ -25,6 +30,7 @@ import {
   testServerConnection,
   resumeProjectOcr,
   retryOcrJob,
+  startIndexProject,
   undoOrganization,
 } from "./server";
 import "./App.css";
@@ -69,11 +75,19 @@ type OcrState =
 
 type RagState =
   | { status: "idle" }
-  | { status: "indexing" }
+  | { status: "estimating" }
+  | { status: "estimate"; estimate: IndexEstimate }
+  | { status: "indexing"; task: IndexTask }
   | { status: "ready"; result: IndexResult }
   | { status: "asking"; result: IndexResult }
   | { status: "answered"; result: IndexResult; answer: AskResult }
-  | { status: "error"; message: string; result?: IndexResult };
+  | { status: "error"; message: string; result?: IndexResult; task?: IndexTask };
+
+type BackupState =
+  | { status: "idle" }
+  | { status: "saving" }
+  | { status: "saved"; path: string; size: number }
+  | { status: "error"; message: string };
 
 type BatchState =
   | { status: "idle" }
@@ -147,6 +161,7 @@ function App() {
   const [question, setQuestion] = useState("");
   const [organization, setOrganization] = useState<OrganizationState>({ status: "idle" });
   const [selectedPlanEntries, setSelectedPlanEntries] = useState<string[]>([]);
+  const [backup, setBackup] = useState<BackupState>({ status: "idle" });
 
   useEffect(() => {
     let active = true;
@@ -283,6 +298,35 @@ function App() {
       window.clearInterval(timer);
     };
   }, [project]);
+
+  useEffect(() => {
+    if (rag.status !== "indexing") return;
+    const taskId = rag.task.id;
+    const timer = window.setTimeout(async () => {
+      try {
+        const task = await getIndexTask(taskId);
+        if (task.status === "completed" && task.result) {
+          setRag({ status: "ready", result: task.result });
+          setOrganization({ status: "idle" });
+        } else if (task.status === "failed") {
+          setRag({
+            status: "error",
+            task,
+            message: task.error ?? "L’indexation a échoué.",
+          });
+        } else {
+          setRag({ status: "indexing", task });
+        }
+      } catch (error) {
+        setRag({
+          status: "error",
+          task: rag.task,
+          message: errorMessage(error, "Le suivi de l’indexation a échoué."),
+        });
+      }
+    }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [rag]);
 
   async function saveServer(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -450,13 +494,42 @@ function App() {
 
   async function buildIndex() {
     if (project.status !== "ready") return;
-    setRag({ status: "indexing" });
+    setRag({ status: "estimating" });
     try {
-      const result = await indexProject(project.project.id);
-      setRag({ status: "ready", result });
-      setOrganization({ status: "idle" });
+      const estimate = await estimateProjectIndex(project.project.id);
+      setRag({ status: "estimate", estimate });
     } catch (error) {
-      setRag({ status: "error", message: errorMessage(error, "L’indexation a échoué.") });
+      setRag({ status: "error", message: errorMessage(error, "L’estimation a échoué.") });
+    }
+  }
+
+  async function confirmIndex() {
+    if (project.status !== "ready") return;
+    try {
+      const task = await startIndexProject(project.project.id);
+      setRag({ status: "indexing", task });
+    } catch (error) {
+      setRag({ status: "error", message: errorMessage(error, "L’indexation n’a pas démarré.") });
+    }
+  }
+
+  async function retryIndex() {
+    if (rag.status !== "error" || !rag.task) return;
+    try {
+      const task = await retryIndexTask(rag.task.id);
+      setRag({ status: "indexing", task });
+    } catch (error) {
+      setRag({ ...rag, message: errorMessage(error, "La relance a échoué.") });
+    }
+  }
+
+  async function backupMetadata() {
+    setBackup({ status: "saving" });
+    try {
+      const result = await createServerBackup();
+      setBackup({ status: "saved", path: result.path, size: result.sizeBytes });
+    } catch (error) {
+      setBackup({ status: "error", message: errorMessage(error, "La sauvegarde a échoué.") });
     }
   }
 
@@ -596,7 +669,16 @@ function App() {
           </form>
           <div className="server-feedback" aria-live="polite">
             {connection.status === "error" && <p className="inline-error">{connection.message}</p>}
-            {connected && <p>Clé validée. Les documents peuvent être envoyés au serveur OCR.</p>}
+            {connected && (
+              <div className="backup-controls">
+                <p>Clé validée. Les documents peuvent être envoyés au serveur OCR.</p>
+                <button className="text-button" type="button" disabled={backup.status === "saving"} onClick={backupMetadata}>
+                  {backup.status === "saving" ? "Sauvegarde…" : "Sauvegarder les métadonnées"}
+                </button>
+                {backup.status === "saved" && <small>Sauvegarde créée : {backup.path} ({formatBytes(backup.size)})</small>}
+                {backup.status === "error" && <small className="inline-error">{backup.message}</small>}
+              </div>
+            )}
             {hasSavedKey && !connected && connection.status !== "testing" && <button className="text-button" type="button" onClick={retestServer}>Retester la clé enregistrée</button>}
           </div>
           {connected && projects.length > 0 && (
@@ -713,10 +795,20 @@ function App() {
                   <section className="rag-panel" aria-labelledby="rag-title">
                     <div className="rag-heading">
                       <div><p className="success-label">Recherche intelligente</p><h3 id="rag-title">Interroger les documents</h3><p>L’index et les embeddings sont conservés localement sur le serveur.</p></div>
-                      {(rag.status === "idle" || (rag.status === "error" && !rag.result)) && <button className="primary-button" onClick={buildIndex}>Créer l’index</button>}
+                      {(rag.status === "idle" || (rag.status === "error" && !rag.result)) && <button className="primary-button" onClick={buildIndex}>Estimer l’indexation</button>}
                     </div>
-                    {rag.status === "indexing" && <div className="ocr-progress"><span className="mini-spinner" /> Création des embeddings…</div>}
-                    {rag.status === "error" && <p className="inline-error">{rag.message}</p>}
+                    {rag.status === "estimating" && <div className="ocr-progress"><span className="mini-spinner" /> Estimation du volume…</div>}
+                    {rag.status === "estimate" && (
+                      <div className="index-estimate">
+                        <strong>Estimation avant envoi</strong>
+                        <p>{formatNumber(rag.estimate.documentsToEmbed)} document(s) à encoder · {formatNumber(rag.estimate.documentsReused)} réutilisé(s)</p>
+                        <p>Environ {formatNumber(rag.estimate.estimatedTokens)} tokens · coût estimé {new Intl.NumberFormat("fr-FR", { style: "currency", currency: "USD", minimumFractionDigits: 4 }).format(rag.estimate.estimatedCostUsd)}</p>
+                        <small>Estimation indicative avec {rag.estimate.embeddingModel}. Aucun embedding n’a encore été envoyé.</small>
+                        <button className="primary-button" onClick={confirmIndex}>Confirmer l’indexation</button>
+                      </div>
+                    )}
+                    {rag.status === "indexing" && <div className="ocr-progress"><span className="mini-spinner" /> Indexation persistante en arrière-plan · {rag.task.status === "queued" ? "en attente" : "embeddings en cours"}…</div>}
+                    {rag.status === "error" && <div className="ocr-result error-result"><p>{rag.message}</p>{rag.task && <button className="secondary-button" onClick={retryIndex}>Relancer l’indexation</button>}</div>}
                     {indexResult && (
                       <>
                         <p className="index-summary">{indexResult.chunksIndexed} extraits prêts · {indexResult.documentsIndexed} document(s) indexé(s) · {indexResult.documentsReused} réutilisé(s)</p>

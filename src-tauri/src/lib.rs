@@ -116,11 +116,44 @@ struct IndexResponse {
     embedding_model: String,
 }
 
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+struct IndexEstimate {
+    project_id: String,
+    documents_total: u64,
+    documents_to_embed: u64,
+    documents_reused: u64,
+    estimated_tokens: u64,
+    estimated_cost_usd: f64,
+    price_per_million_tokens_usd: f64,
+    embedding_model: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+struct IndexTaskResponse {
+    id: String,
+    project_id: String,
+    status: String,
+    estimate: Option<IndexEstimate>,
+    result: Option<IndexResponse>,
+    error: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+struct BackupResponse {
+    path: String,
+    size_bytes: u64,
+    created_at: String,
+}
+
 #[derive(Deserialize, Serialize)]
 struct CitationResponse {
     document_name: String,
     job_id: String,
     chunk_index: u64,
+    page_number: Option<u64>,
     score: f64,
     excerpt: String,
 }
@@ -452,6 +485,81 @@ async fn index_project(app: AppHandle, project_id: String) -> Result<IndexRespon
         .send()
         .await
         .map_err(|error| format!("Indexation impossible : {error}"))?;
+    parse_api_response(response).await
+}
+
+#[tauri::command]
+async fn estimate_project_index(
+    app: AppHandle,
+    project_id: String,
+) -> Result<IndexEstimate, String> {
+    let config = read_server_config(&app)?;
+    let response = api_client(Duration::from_secs(120))?
+        .get(format!(
+            "{}/api/v1/projects/{project_id}/index/estimate",
+            config.server_url
+        ))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .send()
+        .await
+        .map_err(|error| format!("Estimation de l’index impossible : {error}"))?;
+    parse_api_response(response).await
+}
+
+#[tauri::command]
+async fn start_index_project(
+    app: AppHandle,
+    project_id: String,
+) -> Result<IndexTaskResponse, String> {
+    let config = read_server_config(&app)?;
+    let response = api_client(Duration::from_secs(30))?
+        .post(format!(
+            "{}/api/v1/projects/{project_id}/index/jobs",
+            config.server_url
+        ))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .send()
+        .await
+        .map_err(|error| format!("Démarrage de l’indexation impossible : {error}"))?;
+    parse_api_response(response).await
+}
+
+#[tauri::command]
+async fn get_index_task(app: AppHandle, task_id: String) -> Result<IndexTaskResponse, String> {
+    let config = read_server_config(&app)?;
+    let response = api_client(Duration::from_secs(30))?
+        .get(format!("{}/api/v1/index/jobs/{task_id}", config.server_url))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .send()
+        .await
+        .map_err(|error| format!("Suivi de l’indexation impossible : {error}"))?;
+    parse_api_response(response).await
+}
+
+#[tauri::command]
+async fn retry_index_task(app: AppHandle, task_id: String) -> Result<IndexTaskResponse, String> {
+    let config = read_server_config(&app)?;
+    let response = api_client(Duration::from_secs(30))?
+        .post(format!(
+            "{}/api/v1/index/jobs/{task_id}/retry",
+            config.server_url
+        ))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .send()
+        .await
+        .map_err(|error| format!("Relance de l’indexation impossible : {error}"))?;
+    parse_api_response(response).await
+}
+
+#[tauri::command]
+async fn create_server_backup(app: AppHandle) -> Result<BackupResponse, String> {
+    let config = read_server_config(&app)?;
+    let response = api_client(Duration::from_secs(120))?
+        .post(format!("{}/api/v1/maintenance/backups", config.server_url))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .send()
+        .await
+        .map_err(|error| format!("Sauvegarde des métadonnées impossible : {error}"))?;
     parse_api_response(response).await
 }
 
@@ -881,6 +989,11 @@ pub fn run() {
             retry_ocr_job,
             get_ocr_text,
             index_project,
+            estimate_project_index,
+            start_index_project,
+            get_index_task,
+            retry_index_task,
+            create_server_backup,
             ask_project,
             list_document_files,
             create_organization_plan,

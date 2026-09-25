@@ -5,7 +5,7 @@ use std::{
     fs,
     io::Read,
     path::{Component, Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Manager};
@@ -466,16 +466,53 @@ fn open_project_folder(path: String) -> Result<(), String> {
 #[cfg(target_os = "linux")]
 fn open_linux_path(path: &Path) -> Result<(), String> {
     for program in ["gio", "xdg-open"] {
-        let result = if program == "gio" {
-            Command::new(program).arg("open").arg(path).spawn()
+        let status = if program == "gio" {
+            Command::new(program)
+                .arg("open")
+                .arg(path)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
         } else {
-            Command::new(program).arg(path).spawn()
+            Command::new(program)
+                .arg(path)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
         };
-        if result.is_ok() {
+        if status.is_ok_and(|value| value.success()) {
             return Ok(());
         }
     }
-    Err("Aucun explorateur compatible n’est installé (gio ou xdg-open).".to_string())
+
+    let converted = Command::new("wslpath")
+        .arg("-w")
+        .arg(path)
+        .output()
+        .map_err(|error| format!("Conversion du chemin WSL impossible : {error}"))?;
+    if !converted.status.success() {
+        return Err("Conversion du chemin WSL impossible.".to_string());
+    }
+    let windows_path = String::from_utf8_lossy(&converted.stdout)
+        .trim()
+        .to_string();
+    let argument = if path.is_file() {
+        format!("/select,{windows_path}")
+    } else {
+        windows_path
+    };
+    for explorer in ["/mnt/c/Windows/explorer.exe", "explorer.exe"] {
+        if Command::new(explorer)
+            .arg(&argument)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+    Err("Impossible de lancer l’Explorateur Windows depuis WSL.".to_string())
 }
 
 #[tauri::command]
@@ -1305,6 +1342,15 @@ fn list_document_files(path: String) -> Result<Vec<DocumentFile>, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    if Path::new("/proc/sys/fs/binfmt_misc/WSLInterop").exists()
+        || std::env::var_os("WSL_DISTRO_NAME").is_some()
+    {
+        std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
+        std::env::set_var("GALLIUM_DRIVER", "llvmpipe");
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -1438,3 +1484,4 @@ mod tests {
         let _ = fs::remove_dir_all(base);
     }
 }
+

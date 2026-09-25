@@ -23,6 +23,28 @@ export type OcrJob = {
   error: string | null;
 };
 
+export type IndexResult = {
+  projectId: string;
+  documentsIndexed: number;
+  documentsReused: number;
+  chunksIndexed: number;
+  embeddingModel: string;
+};
+
+export type Citation = {
+  document_name: string;
+  job_id: string;
+  chunk_index: number;
+  score: number;
+  excerpt: string;
+};
+
+export type AskResult = {
+  answer: string;
+  citations: Citation[];
+  model: string;
+};
+
 export function getServerConfig() {
   return invoke<ServerConfigStatus>("get_server_config");
 }
@@ -49,4 +71,12 @@ export function getOcrJob(jobId: string) {
 
 export function getOcrText(jobId: string) {
   return invoke<string>("get_ocr_text", { jobId });
+}
+
+export function indexProject(projectId: string) {
+  return invoke<IndexResult>("index_project", { projectId });
+}
+
+export function askProject(projectId: string, question: string) {
+  return invoke<AskResult>("ask_project", { projectId, question });
 }

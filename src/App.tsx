@@ -2,11 +2,15 @@ import { FormEvent, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  askProject,
   configureServer,
   createRemoteProject,
   getOcrJob,
   getOcrText,
   getServerConfig,
+  indexProject,
+  AskResult,
+  IndexResult,
   OcrJob,
   RemoteProject,
   submitOcrJob,
@@ -52,6 +56,14 @@ type OcrState =
   | { status: "completed"; path: string; job: OcrJob; text: string }
   | { status: "error"; message: string };
 
+type RagState =
+  | { status: "idle" }
+  | { status: "indexing" }
+  | { status: "ready"; result: IndexResult }
+  | { status: "asking"; result: IndexResult }
+  | { status: "answered"; result: IndexResult; answer: AskResult }
+  | { status: "error"; message: string; result?: IndexResult };
+
 function errorMessage(error: unknown, fallback: string) {
   return typeof error === "string" ? error : fallback;
 }
@@ -94,6 +106,8 @@ function App() {
   const [connection, setConnection] = useState<ConnectionState>({ status: "loading" });
   const [project, setProject] = useState<ProjectState>({ status: "idle" });
   const [ocr, setOcr] = useState<OcrState>({ status: "idle" });
+  const [rag, setRag] = useState<RagState>({ status: "idle" });
+  const [question, setQuestion] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -177,6 +191,7 @@ function App() {
     if (!selected) return;
     setProject({ status: "idle" });
     setOcr({ status: "idle" });
+    setRag({ status: "idle" });
     setScan({ status: "scanning", path: selected });
     try {
       const summary = await invoke<FolderSummary>("scan_folder", { path: selected });
@@ -207,6 +222,7 @@ function App() {
     });
     if (!selected) return;
     setOcr({ status: "uploading", path: selected });
+    setRag({ status: "idle" });
     try {
       const job = await submitOcrJob(selected, project.project.id);
       setOcr({ status: "processing", path: selected, job });
@@ -215,7 +231,36 @@ function App() {
     }
   }
 
+  async function buildIndex() {
+    if (project.status !== "ready") return;
+    setRag({ status: "indexing" });
+    try {
+      const result = await indexProject(project.project.id);
+      setRag({ status: "ready", result });
+    } catch (error) {
+      setRag({ status: "error", message: errorMessage(error, "L’indexation a échoué.") });
+    }
+  }
+
+  async function ask(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (project.status !== "ready" || (rag.status !== "ready" && rag.status !== "answered")) return;
+    const result = rag.result;
+    setRag({ status: "asking", result });
+    try {
+      const answer = await askProject(project.project.id, question.trim());
+      setRag({ status: "answered", result, answer });
+    } catch (error) {
+      setRag({
+        status: "error",
+        result,
+        message: errorMessage(error, "La question n’a pas pu être traitée."),
+      });
+    }
+  }
+
   const connected = connection.status === "connected";
+  const indexResult = "result" in rag ? rag.result : undefined;
 
   return (
     <div className="app-shell">
@@ -308,6 +353,7 @@ function App() {
               {project.status === "error" && <p className="inline-error align-right">{project.message}</p>}
 
               {project.status === "ready" && (
+                <>
                 <section className="ocr-panel" aria-labelledby="ocr-title">
                   <div><p className="success-label">Projet prêt</p><h3 id="ocr-title">Tester l’OCR avec un PDF</h3><p>Le fichier original reste intact. Une copie est envoyée au serveur local.</p></div>
                   {ocr.status === "idle" && <button className="primary-button" onClick={choosePdf}>Choisir un PDF</button>}
@@ -321,6 +367,35 @@ function App() {
                     </div>
                   )}
                 </section>
+                {ocr.status === "completed" && (
+                  <section className="rag-panel" aria-labelledby="rag-title">
+                    <div className="rag-heading">
+                      <div><p className="success-label">Recherche intelligente</p><h3 id="rag-title">Interroger les documents</h3><p>L’index et les embeddings sont conservés localement sur le serveur.</p></div>
+                      {(rag.status === "idle" || (rag.status === "error" && !rag.result)) && <button className="primary-button" onClick={buildIndex}>Créer l’index</button>}
+                    </div>
+                    {rag.status === "indexing" && <div className="ocr-progress"><span className="mini-spinner" /> Création des embeddings…</div>}
+                    {rag.status === "error" && <p className="inline-error">{rag.message}</p>}
+                    {indexResult && (
+                      <>
+                        <p className="index-summary">{indexResult.chunksIndexed} extraits prêts · {indexResult.documentsIndexed} document(s) indexé(s) · {indexResult.documentsReused} réutilisé(s)</p>
+                        <form className="question-form" onSubmit={ask}>
+                          <label htmlFor="document-question">Votre question</label>
+                          <textarea id="document-question" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Exemple : quelle est la date de la dernière facture ?" minLength={3} maxLength={4000} required />
+                          <button className="primary-button" disabled={rag.status === "asking"}>{rag.status === "asking" ? "Recherche…" : "Poser la question"}</button>
+                        </form>
+                      </>
+                    )}
+                    {rag.status === "answered" && (
+                      <div className="answer-card">
+                        <strong>Réponse</strong>
+                        <p>{rag.answer.answer}</p>
+                        <h4>Sources utilisées</h4>
+                        <ul>{rag.answer.citations.map((citation, index) => <li key={`${citation.job_id}-${citation.chunk_index}`}><b>[{index + 1}] {citation.document_name}</b><span>{citation.excerpt}</span></li>)}</ul>
+                      </div>
+                    )}
+                  </section>
+                )}
+                </>
               )}
             </div>
           )}

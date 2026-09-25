@@ -39,6 +39,32 @@ struct OcrJobResponse {
     error: Option<String>,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IndexResponse {
+    project_id: String,
+    documents_indexed: u64,
+    documents_reused: u64,
+    chunks_indexed: u64,
+    embedding_model: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct CitationResponse {
+    document_name: String,
+    job_id: String,
+    chunk_index: u64,
+    score: f64,
+    excerpt: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct AskResponse {
+    answer: String,
+    citations: Vec<CitationResponse>,
+    model: String,
+}
+
 #[derive(Deserialize)]
 struct ApiError {
     detail: Option<String>,
@@ -65,10 +91,26 @@ fn normalize_server_url(value: &str) -> Result<String, String> {
 
 fn read_server_config(app: &AppHandle) -> Result<ServerConfig, String> {
     let path = config_path(app)?;
-    let content = fs::read_to_string(path)
-        .map_err(|_| "Le serveur ClairDoc n’est pas encore configuré.".to_string())?;
-    serde_json::from_str(&content)
-        .map_err(|_| "La configuration du serveur est illisible.".to_string())
+    if let Ok(content) = fs::read_to_string(path) {
+        return serde_json::from_str(&content)
+            .map_err(|_| "La configuration du serveur est illisible.".to_string());
+    }
+    environment_server_config()
+        .ok_or_else(|| "Le serveur ClairDoc n’est pas encore configuré.".to_string())
+}
+
+fn environment_server_config() -> Option<ServerConfig> {
+    let _ = dotenvy::dotenv();
+    let api_key = std::env::var("CLAIRDOC_API_KEY").ok()?;
+    if api_key.trim().is_empty() {
+        return None;
+    }
+    let server_url = std::env::var("CLAIRDOC_SERVER_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8787".to_string());
+    Some(ServerConfig {
+        server_url: normalize_server_url(&server_url).ok()?,
+        api_key: api_key.trim().to_string(),
+    })
 }
 
 fn write_server_config(app: &AppHandle, config: &ServerConfig) -> Result<(), String> {
@@ -254,6 +296,41 @@ async fn get_ocr_text(app: AppHandle, job_id: String) -> Result<String, String> 
     Err(format!("Le texte OCR n’est pas disponible ({status})."))
 }
 
+#[tauri::command]
+async fn index_project(app: AppHandle, project_id: String) -> Result<IndexResponse, String> {
+    let config = read_server_config(&app)?;
+    let response = api_client(Duration::from_secs(7200))?
+        .post(format!(
+            "{}/api/v1/projects/{project_id}/index",
+            config.server_url
+        ))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .send()
+        .await
+        .map_err(|error| format!("Indexation impossible : {error}"))?;
+    parse_api_response(response).await
+}
+
+#[tauri::command]
+async fn ask_project(
+    app: AppHandle,
+    project_id: String,
+    question: String,
+) -> Result<AskResponse, String> {
+    let config = read_server_config(&app)?;
+    let response = api_client(Duration::from_secs(180))?
+        .post(format!(
+            "{}/api/v1/projects/{project_id}/ask",
+            config.server_url
+        ))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .json(&serde_json::json!({ "question": question }))
+        .send()
+        .await
+        .map_err(|error| format!("Question impossible : {error}"))?;
+    parse_api_response(response).await
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FolderSummary {
@@ -386,7 +463,9 @@ pub fn run() {
             create_remote_project,
             submit_ocr_job,
             get_ocr_job,
-            get_ocr_text
+            get_ocr_text,
+            index_project,
+            ask_project
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

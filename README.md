@@ -23,4 +23,3 @@ Vérification du frontend :
 ```powershell
 npm run build
 ```
-

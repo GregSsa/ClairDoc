@@ -13,6 +13,10 @@ Application de bureau destinée à aider les utilisateurs à inventorier, recher
 - suivi du travail OCR et affichage du texte extrait ;
 - création d'un index sémantique local à partir des PDF OCRisés ;
 - questions au LLM avec affichage des extraits sources ;
+- import récursif de tous les PDF d'un dossier ;
+- progression globale, pause, reprise et relance des échecs ;
+- sélection et reprise des projets créés précédemment ;
+- détection côté serveur des PDF identiques déjà traités ;
 - aucun déplacement ou renommage des originaux ; un PDF n'est envoyé au serveur qu'après une action explicite.
 
 ## Développement

@@ -31,6 +31,20 @@ struct ProjectResponse {
 }
 
 #[derive(Deserialize, Serialize)]
+struct ProjectOcrState {
+    project_id: String,
+    paused: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PdfFile {
+    path: String,
+    name: String,
+    bytes: u64,
+}
+
+#[derive(Deserialize, Serialize)]
 struct OcrJobResponse {
     id: String,
     project_id: Option<String>,
@@ -227,6 +241,18 @@ async fn create_remote_project(app: AppHandle, name: String) -> Result<ProjectRe
 }
 
 #[tauri::command]
+async fn list_remote_projects(app: AppHandle) -> Result<Vec<ProjectResponse>, String> {
+    let config = read_server_config(&app)?;
+    let response = api_client(Duration::from_secs(20))?
+        .get(format!("{}/api/v1/projects", config.server_url))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .send()
+        .await
+        .map_err(|error| format!("Chargement des projets impossible : {error}"))?;
+    parse_api_response(response).await
+}
+
+#[tauri::command]
 async fn submit_ocr_job(
     app: AppHandle,
     path: String,
@@ -271,6 +297,67 @@ async fn get_ocr_job(app: AppHandle, job_id: String) -> Result<OcrJobResponse, S
         .send()
         .await
         .map_err(|error| format!("Suivi OCR impossible : {error}"))?;
+    parse_api_response(response).await
+}
+
+#[tauri::command]
+async fn list_project_jobs(
+    app: AppHandle,
+    project_id: String,
+) -> Result<Vec<OcrJobResponse>, String> {
+    let config = read_server_config(&app)?;
+    let response = api_client(Duration::from_secs(30))?
+        .get(format!(
+            "{}/api/v1/projects/{project_id}/ocr/jobs",
+            config.server_url
+        ))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .send()
+        .await
+        .map_err(|error| format!("Chargement des travaux impossible : {error}"))?;
+    parse_api_response(response).await
+}
+
+async fn change_project_ocr_state(
+    app: &AppHandle,
+    project_id: &str,
+    action: &str,
+) -> Result<ProjectOcrState, String> {
+    let config = read_server_config(app)?;
+    let response = api_client(Duration::from_secs(20))?
+        .post(format!(
+            "{}/api/v1/projects/{project_id}/ocr/{action}",
+            config.server_url
+        ))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .send()
+        .await
+        .map_err(|error| format!("Modification de la file OCR impossible : {error}"))?;
+    parse_api_response(response).await
+}
+
+#[tauri::command]
+async fn pause_project_ocr(app: AppHandle, project_id: String) -> Result<ProjectOcrState, String> {
+    change_project_ocr_state(&app, &project_id, "pause").await
+}
+
+#[tauri::command]
+async fn resume_project_ocr(app: AppHandle, project_id: String) -> Result<ProjectOcrState, String> {
+    change_project_ocr_state(&app, &project_id, "resume").await
+}
+
+#[tauri::command]
+async fn retry_ocr_job(app: AppHandle, job_id: String) -> Result<OcrJobResponse, String> {
+    let config = read_server_config(&app)?;
+    let response = api_client(Duration::from_secs(20))?
+        .post(format!(
+            "{}/api/v1/ocr/jobs/{job_id}/retry",
+            config.server_url
+        ))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .send()
+        .await
+        .map_err(|error| format!("Relance OCR impossible : {error}"))?;
     parse_api_response(response).await
 }
 
@@ -450,6 +537,50 @@ fn scan_folder(path: String) -> Result<FolderSummary, String> {
     Ok(summary)
 }
 
+#[tauri::command]
+fn list_pdf_files(path: String) -> Result<Vec<PdfFile>, String> {
+    let root = PathBuf::from(path)
+        .canonicalize()
+        .map_err(|_| "Le dossier sélectionné est introuvable ou inaccessible.".to_string())?;
+    if !root.is_dir() {
+        return Err("L’emplacement sélectionné n’est pas un dossier.".to_string());
+    }
+
+    let mut files = Vec::new();
+    let mut pending = vec![root];
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                pending.push(entry.path());
+                continue;
+            }
+            let file_path = entry.path();
+            let is_pdf = file_path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
+            if file_type.is_file() && is_pdf {
+                files.push(PdfFile {
+                    name: entry.file_name().to_string_lossy().into_owned(),
+                    bytes: entry.metadata().map(|metadata| metadata.len()).unwrap_or(0),
+                    path: file_path.display().to_string(),
+                });
+            }
+        }
+    }
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(files)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -461,11 +592,17 @@ pub fn run() {
             configure_server,
             test_server_connection,
             create_remote_project,
+            list_remote_projects,
             submit_ocr_job,
             get_ocr_job,
+            list_project_jobs,
+            pause_project_ocr,
+            resume_project_ocr,
+            retry_ocr_job,
             get_ocr_text,
             index_project,
-            ask_project
+            ask_project,
+            list_pdf_files
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

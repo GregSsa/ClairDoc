@@ -9,12 +9,19 @@ import {
   getOcrText,
   getServerConfig,
   indexProject,
+  listPdfFiles,
+  listProjectJobs,
+  listRemoteProjects,
+  pauseProjectOcr,
+  PdfFile,
   AskResult,
   IndexResult,
   OcrJob,
   RemoteProject,
   submitOcrJob,
   testServerConnection,
+  resumeProjectOcr,
+  retryOcrJob,
 } from "./server";
 import "./App.css";
 
@@ -64,6 +71,21 @@ type RagState =
   | { status: "answered"; result: IndexResult; answer: AskResult }
   | { status: "error"; message: string; result?: IndexResult };
 
+type BatchState =
+  | { status: "idle" }
+  | { status: "discovering" }
+  | { status: "uploading"; files: PdfFile[]; next: number; jobIds: string[]; paused: boolean }
+  | { status: "processing"; files: PdfFile[]; jobIds: string[]; paused: boolean }
+  | { status: "completed"; files: PdfFile[]; jobIds: string[] }
+  | {
+      status: "error";
+      message: string;
+      files: PdfFile[];
+      next: number;
+      jobIds: string[];
+      paused: boolean;
+    };
+
 function errorMessage(error: unknown, fallback: string) {
   return typeof error === "string" ? error : fallback;
 }
@@ -105,7 +127,10 @@ function App() {
   const [hasSavedKey, setHasSavedKey] = useState(false);
   const [connection, setConnection] = useState<ConnectionState>({ status: "loading" });
   const [project, setProject] = useState<ProjectState>({ status: "idle" });
+  const [projects, setProjects] = useState<RemoteProject[]>([]);
   const [ocr, setOcr] = useState<OcrState>({ status: "idle" });
+  const [batch, setBatch] = useState<BatchState>({ status: "idle" });
+  const [projectJobs, setProjectJobs] = useState<OcrJob[]>([]);
   const [rag, setRag] = useState<RagState>({ status: "idle" });
   const [question, setQuestion] = useState("");
 
@@ -140,6 +165,11 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (connection.status !== "connected") return;
+    listRemoteProjects().then(setProjects).catch(() => setProjects([]));
+  }, [connection.status]);
+
+  useEffect(() => {
     if (ocr.status !== "processing") return;
     const { job, path } = ocr;
     const timer = window.setTimeout(async () => {
@@ -159,6 +189,86 @@ function App() {
     }, 1500);
     return () => window.clearTimeout(timer);
   }, [ocr]);
+
+  useEffect(() => {
+    if (project.status !== "ready" || batch.status !== "uploading" || batch.paused) return;
+    if (batch.next >= batch.files.length) {
+      setBatch({
+        status: "processing",
+        files: batch.files,
+        jobIds: batch.jobIds,
+        paused: false,
+      });
+      return;
+    }
+
+    let active = true;
+    const file = batch.files[batch.next];
+    submitOcrJob(file.path, project.project.id)
+      .then((job) => {
+        if (!active) return;
+        setBatch((current) => {
+          if (current.status !== "uploading") return current;
+          const jobIds = current.jobIds.includes(job.id)
+            ? current.jobIds
+            : [...current.jobIds, job.id];
+          return { ...current, next: current.next + 1, jobIds };
+        });
+      })
+      .catch((error) => {
+        if (!active) return;
+        setBatch((current) =>
+          current.status === "uploading"
+            ? {
+                status: "error",
+                message: errorMessage(error, `Envoi impossible : ${file.name}`),
+                files: current.files,
+                next: current.next,
+                jobIds: current.jobIds,
+                paused: current.paused,
+              }
+            : current,
+        );
+      });
+    return () => {
+      active = false;
+    };
+  }, [batch, project]);
+
+  useEffect(() => {
+    if (project.status !== "ready") {
+      setProjectJobs([]);
+      return;
+    }
+    let active = true;
+    const projectId = project.project.id;
+    const refresh = async () => {
+      try {
+        const jobs = await listProjectJobs(projectId);
+        if (!active) return;
+        setProjectJobs(jobs);
+        setBatch((current) => {
+          if (current.status !== "processing" || current.jobIds.length === 0) return current;
+          const selected = jobs.filter((job) => current.jobIds.includes(job.id));
+          if (
+            selected.length === current.jobIds.length &&
+            selected.every((job) => job.status === "completed" || job.status === "failed")
+          ) {
+            return { status: "completed", files: current.files, jobIds: current.jobIds };
+          }
+          return current;
+        });
+      } catch {
+        // A temporary polling failure is retried automatically.
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(refresh, 2000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [project]);
 
   async function saveServer(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -189,9 +299,9 @@ function App() {
   async function chooseFolder() {
     const selected = await open({ directory: true, multiple: false, title: "Choisir le dossier à analyser" });
     if (!selected) return;
-    setProject({ status: "idle" });
     setOcr({ status: "idle" });
     setRag({ status: "idle" });
+    setBatch({ status: "idle" });
     setScan({ status: "scanning", path: selected });
     try {
       const summary = await invoke<FolderSummary>("scan_folder", { path: selected });
@@ -207,9 +317,101 @@ function App() {
     try {
       const created = await createRemoteProject(scan.summary.folderName);
       setProject({ status: "ready", project: created });
+      setProjects((current) => [created, ...current.filter((item) => item.id !== created.id)]);
     } catch (error) {
       setProject({ status: "error", message: errorMessage(error, "Le projet n’a pas pu être créé.") });
     }
+  }
+
+  async function importAllPdfs() {
+    if (scan.status !== "ready" || project.status !== "ready") return;
+    setBatch({ status: "discovering" });
+    try {
+      const files = await listPdfFiles(scan.summary.rootPath);
+      if (files.length === 0) {
+        setBatch({
+          status: "error",
+          message: "Aucun PDF n’a été trouvé dans ce dossier.",
+          files: [],
+          next: 0,
+          jobIds: [],
+          paused: false,
+        });
+        return;
+      }
+      await resumeProjectOcr(project.project.id);
+      setBatch({ status: "uploading", files, next: 0, jobIds: [], paused: false });
+    } catch (error) {
+      setBatch({
+        status: "error",
+        message: errorMessage(error, "Impossible de préparer l’import."),
+        files: [],
+        next: 0,
+        jobIds: [],
+        paused: false,
+      });
+    }
+  }
+
+  async function toggleBatchPause() {
+    if (project.status !== "ready" || (batch.status !== "uploading" && batch.status !== "processing")) return;
+    const paused = !batch.paused;
+    try {
+      if (paused) await pauseProjectOcr(project.project.id);
+      else await resumeProjectOcr(project.project.id);
+      setBatch((current) =>
+        current.status === "uploading" || current.status === "processing"
+          ? { ...current, paused }
+          : current,
+      );
+    } catch (error) {
+      setBatch((current) =>
+        current.status === "uploading" || current.status === "processing"
+          ? {
+              status: "error",
+              message: errorMessage(error, "Pause ou reprise impossible."),
+              files: current.files,
+              next: current.status === "uploading" ? current.next : current.files.length,
+              jobIds: current.jobIds,
+              paused: current.paused,
+            }
+          : current,
+      );
+    }
+  }
+
+  async function retryFailedJobs() {
+    if (project.status !== "ready") return;
+    const failed = projectJobs.filter((job) => job.status === "failed");
+    try {
+      await Promise.all(failed.map((job) => retryOcrJob(job.id)));
+      await resumeProjectOcr(project.project.id);
+      setBatch((current) => {
+        const files = "files" in current ? current.files : [];
+        const jobIds = failed.map((job) => job.id);
+        return { status: "processing", files, jobIds, paused: false };
+      });
+    } catch (error) {
+      setBatch({
+        status: "error",
+        message: errorMessage(error, "Impossible de relancer les travaux en échec."),
+        files: [],
+        next: 0,
+        jobIds: failed.map((job) => job.id),
+        paused: false,
+      });
+    }
+  }
+
+  function resumeUploadAfterError() {
+    if (batch.status !== "error" || batch.files.length === 0) return;
+    setBatch({
+      status: "uploading",
+      files: batch.files,
+      next: batch.next,
+      jobIds: batch.jobIds,
+      paused: false,
+    });
   }
 
   async function choosePdf() {
@@ -261,6 +463,12 @@ function App() {
 
   const connected = connection.status === "connected";
   const indexResult = "result" in rag ? rag.result : undefined;
+  const completedJobs = projectJobs.filter((job) => job.status === "completed");
+  const failedJobs = projectJobs.filter((job) => job.status === "failed");
+  const pendingJobs = projectJobs.filter(
+    (job) => job.status === "queued" || job.status === "running",
+  );
+  const documentsReady = completedJobs.length > 0 || ocr.status === "completed";
 
   return (
     <div className="app-shell">
@@ -295,6 +503,23 @@ function App() {
             {connected && <p>Clé validée. Les documents peuvent être envoyés au serveur OCR.</p>}
             {hasSavedKey && !connected && connection.status !== "testing" && <button className="text-button" type="button" onClick={retestServer}>Retester la clé enregistrée</button>}
           </div>
+          {connected && projects.length > 0 && (
+            <label className="project-picker">
+              Reprendre un projet existant
+              <select
+                value={project.status === "ready" ? project.project.id : ""}
+                onChange={(event) => {
+                  const selected = projects.find((item) => item.id === event.target.value);
+                  setProject(selected ? { status: "ready", project: selected } : { status: "idle" });
+                  setBatch({ status: "idle" });
+                  setRag({ status: "idle" });
+                }}
+              >
+                <option value="">Créer un nouveau projet</option>
+                {projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              </select>
+            </label>
+          )}
         </section>
 
         <section className="hero" aria-labelledby="page-title">
@@ -355,8 +580,28 @@ function App() {
               {project.status === "ready" && (
                 <>
                 <section className="ocr-panel" aria-labelledby="ocr-title">
-                  <div><p className="success-label">Projet prêt</p><h3 id="ocr-title">Tester l’OCR avec un PDF</h3><p>Le fichier original reste intact. Une copie est envoyée au serveur local.</p></div>
-                  {ocr.status === "idle" && <button className="primary-button" onClick={choosePdf}>Choisir un PDF</button>}
+                  <div><p className="success-label">Projet prêt · {project.project.name}</p><h3 id="ocr-title">Importer les PDF du dossier</h3><p>Les sous-dossiers sont inclus. Les fichiers identiques déjà connus ne sont pas retraités.</p></div>
+                  {batch.status === "idle" && (
+                    <div className="import-actions"><button className="primary-button" onClick={importAllPdfs}>Importer tous les PDF</button><button className="text-button" onClick={choosePdf}>Ou choisir un seul PDF</button></div>
+                  )}
+                  {batch.status === "discovering" && <div className="ocr-progress"><span className="mini-spinner" /> Recherche des PDF…</div>}
+                  {batch.status === "uploading" && (
+                    <div className="batch-progress">
+                      <div className="result-heading"><strong>Envoi {batch.next} / {batch.files.length}</strong><button className="secondary-button small-button" onClick={toggleBatchPause}>{batch.paused ? "Reprendre" : "Mettre en pause"}</button></div>
+                      <progress value={batch.next} max={batch.files.length} />
+                      <p>{batch.paused ? "Import en pause." : batch.files[batch.next]?.name ?? "Finalisation des envois…"}</p>
+                    </div>
+                  )}
+                  {batch.status === "processing" && (
+                    <div className="batch-progress">
+                      <div className="result-heading"><strong>Traitement OCR · {completedJobs.length} terminé(s), {pendingJobs.length} en attente</strong><button className="secondary-button small-button" onClick={toggleBatchPause}>{batch.paused ? "Reprendre" : "Mettre en pause"}</button></div>
+                      <progress value={completedJobs.length + failedJobs.length} max={Math.max(batch.jobIds.length, 1)} />
+                    </div>
+                  )}
+                  {batch.status === "completed" && <div className="batch-complete"><strong>Import terminé</strong><span>{completedJobs.length} document(s) prêt(s), {failedJobs.length} échec(s).</span><button className="text-button" onClick={importAllPdfs}>Rechercher les nouveaux PDF</button></div>}
+                  {batch.status === "error" && <div className="ocr-result error-result"><p>{batch.message}</p>{batch.files.length > 0 && <button className="secondary-button" onClick={resumeUploadAfterError}>Reprendre l’envoi</button>}</div>}
+                  {failedJobs.length > 0 && <button className="secondary-button retry-button" onClick={retryFailedJobs}>Relancer {failedJobs.length} échec(s)</button>}
+                  {batch.status === "idle" && projectJobs.length > 0 && <p className="existing-jobs">Historique : {completedJobs.length} terminé(s), {pendingJobs.length} en cours, {failedJobs.length} en échec.</p>}
                   {ocr.status === "uploading" && <div className="ocr-progress"><span className="mini-spinner" /> Envoi du PDF…</div>}
                   {ocr.status === "processing" && <div className="ocr-progress"><span className="mini-spinner" /> OCR en cours · {ocr.job.original_filename}</div>}
                   {ocr.status === "error" && <div className="ocr-result error-result"><p>{ocr.message}</p><button className="secondary-button" onClick={choosePdf}>Réessayer</button></div>}
@@ -367,7 +612,7 @@ function App() {
                     </div>
                   )}
                 </section>
-                {ocr.status === "completed" && (
+                {documentsReady && (
                   <section className="rag-panel" aria-labelledby="rag-title">
                     <div className="rag-heading">
                       <div><p className="success-label">Recherche intelligente</p><h3 id="rag-title">Interroger les documents</h3><p>L’index et les embeddings sont conservés localement sur le serveur.</p></div>

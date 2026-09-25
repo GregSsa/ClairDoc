@@ -11,9 +11,9 @@
 body { margin: 0; min-width: 320px; min-height: 100vh; }
 button { font: inherit; }
 button:focus-visible { outline: 3px solid rgba(31, 125, 106, 0.3); outline-offset: 3px; }
-input { font: inherit; }
+input, select { font: inherit; }
 textarea { font: inherit; }
-input:focus-visible, textarea:focus-visible { outline: 3px solid rgba(31, 125, 106, 0.2); border-color: #1f7d6a; }
+input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px solid rgba(31, 125, 106, 0.2); border-color: #1f7d6a; }
 
 .app-shell {
   min-height: 100vh;
@@ -77,6 +77,8 @@ h1 { margin: 0; color: #132b26; font-size: clamp(34px, 5vw, 50px); line-height: 
 .align-right { text-align: right; }
 .text-button { padding: 0; border: 0; color: #1f7d6a; background: transparent; font-weight: 750; cursor: pointer; }
 .text-button:hover { text-decoration: underline; }
+.project-picker { margin-top: 14px; display: grid; gap: 7px; color: #405a53; font-size: 12px; font-weight: 750; }
+.project-picker select { height: 44px; padding: 0 12px; border: 1px solid #cbd8d3; border-radius: 11px; color: #203b34; background: #fff; }
 
 .workspace-card {
   min-height: 410px; overflow: hidden; border: 1px solid #dce5e1; border-radius: 26px;
@@ -169,6 +171,15 @@ h1 { margin: 0; color: #132b26; font-size: clamp(34px, 5vw, 50px); line-height: 
 }
 .error-result { padding: 14px; border-radius: 12px; background: #fff1ee; }
 .error-result p { margin: 0 0 12px; color: #9c4338; }
+.import-actions { display: flex; align-items: center; gap: 18px; }
+.batch-progress { display: grid; gap: 10px; }
+.batch-progress .result-heading { align-items: center; }
+.batch-progress progress { width: 100%; height: 12px; accent-color: #1f7d6a; }
+.batch-progress p, .existing-jobs { margin: 0; color: #657570; font-size: 13px; }
+.small-button { min-height: 38px; padding: 0 14px; font-size: 13px; }
+.batch-complete { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; padding: 14px; border-radius: 12px; color: #315d52; background: #e8f5f0; }
+.batch-complete span { color: #587069; font-size: 13px; }
+.retry-button { margin-top: 14px; }
 
 .rag-panel {
   margin-top: 18px; padding: 22px; border: 1px solid #d9ddeb; border-radius: 18px;
@@ -222,6 +233,7 @@ h1 { margin: 0; color: #132b26; font-size: clamp(34px, 5vw, 50px); line-height: 
   .summary-actions { flex-direction: column-reverse; }
   .primary-button, .secondary-button { width: 100%; }
   .rag-heading { flex-direction: column; }
+  .import-actions, .batch-complete { align-items: stretch; flex-direction: column; }
   .question-form .primary-button { justify-self: stretch; }
   .steps { display: none; }
 }

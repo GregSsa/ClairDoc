@@ -40,7 +40,7 @@ struct OcrJobResponse {
 }
 
 #[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
 struct IndexResponse {
     project_id: String,
     documents_indexed: u64,

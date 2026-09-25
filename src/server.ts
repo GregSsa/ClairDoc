@@ -13,6 +13,20 @@ export type ConnectionResponse = {
 export type RemoteProject = {
   id: string;
   name: string;
+  sourceRoot: string | null;
+};
+
+export type RuntimeInfo = {
+  version: string;
+  llmModel: string;
+  embeddingModel: string;
+  embeddingDimensions: number;
+  ocrLanguages: string;
+  dataDir: string;
+  maxUploadMb: number;
+  maxIndexTokens: number;
+  openaiConfigured: boolean;
+  tlsEnabled: boolean;
 };
 
 export type OcrJob = {
@@ -145,8 +159,24 @@ export function testServerConnection() {
   return invoke<ConnectionResponse>("test_server_connection");
 }
 
-export function createRemoteProject(name: string) {
-  return invoke<RemoteProject>("create_remote_project", { name });
+export function createRemoteProject(name: string, sourceRoot?: string) {
+  return invoke<RemoteProject>("create_remote_project", { name, sourceRoot });
+}
+
+export function updateRemoteProject(projectId: string, name?: string, sourceRoot?: string) {
+  return invoke<RemoteProject>("update_remote_project", { projectId, name, sourceRoot });
+}
+
+export function deleteRemoteProject(projectId: string) {
+  return invoke<void>("delete_remote_project", { projectId });
+}
+
+export function openProjectFolder(path: string) {
+  return invoke<void>("open_project_folder", { path });
+}
+
+export function getRuntimeInfo() {
+  return invoke<RuntimeInfo>("get_runtime_info");
 }
 
 export function listRemoteProjects() {

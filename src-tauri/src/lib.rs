@@ -5,6 +5,7 @@ use std::{
     fs,
     io::Read,
     path::{Component, Path, PathBuf},
+    process::Command,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Manager};
@@ -31,9 +32,26 @@ struct ConnectionResponse {
 }
 
 #[derive(Deserialize, Serialize)]
+#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
 struct ProjectResponse {
     id: String,
     name: String,
+    source_root: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+struct RuntimeInfoResponse {
+    version: String,
+    llm_model: String,
+    embedding_model: String,
+    embedding_dimensions: u64,
+    ocr_languages: String,
+    data_dir: String,
+    max_upload_mb: u64,
+    max_index_tokens: u64,
+    openai_configured: bool,
+    tls_enabled: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -347,15 +365,108 @@ async fn test_server_connection(app: AppHandle) -> Result<ConnectionResponse, St
 }
 
 #[tauri::command]
-async fn create_remote_project(app: AppHandle, name: String) -> Result<ProjectResponse, String> {
+async fn create_remote_project(
+    app: AppHandle,
+    name: String,
+    source_root: Option<String>,
+) -> Result<ProjectResponse, String> {
     let config = read_server_config(&app)?;
     let response = api_client(Duration::from_secs(20))?
         .post(format!("{}/api/v1/projects", config.server_url))
         .header("X-ClairDoc-Key", &config.api_key)
-        .json(&serde_json::json!({ "name": name }))
+        .json(&serde_json::json!({ "name": name, "source_root": source_root }))
         .send()
         .await
         .map_err(|error| format!("Création du projet impossible : {error}"))?;
+    parse_api_response(response).await
+}
+
+#[tauri::command]
+async fn update_remote_project(
+    app: AppHandle,
+    project_id: String,
+    name: Option<String>,
+    source_root: Option<String>,
+) -> Result<ProjectResponse, String> {
+    let config = read_server_config(&app)?;
+    let mut payload = serde_json::Map::new();
+    if let Some(name) = name {
+        payload.insert("name".to_string(), serde_json::Value::String(name));
+    }
+    if let Some(source_root) = source_root {
+        payload.insert(
+            "source_root".to_string(),
+            serde_json::Value::String(source_root),
+        );
+    }
+    let response = api_client(Duration::from_secs(20))?
+        .patch(format!(
+            "{}/api/v1/projects/{project_id}",
+            config.server_url
+        ))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|error| format!("Modification du projet impossible : {error}"))?;
+    parse_api_response(response).await
+}
+
+#[tauri::command]
+async fn delete_remote_project(app: AppHandle, project_id: String) -> Result<(), String> {
+    let config = read_server_config(&app)?;
+    let response = api_client(Duration::from_secs(30))?
+        .delete(format!(
+            "{}/api/v1/projects/{project_id}",
+            config.server_url
+        ))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .send()
+        .await
+        .map_err(|error| format!("Suppression du projet impossible : {error}"))?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        let status = response.status();
+        let detail = response
+            .json::<ApiError>()
+            .await
+            .ok()
+            .and_then(|error| error.detail)
+            .unwrap_or_else(|| format!("Le serveur a répondu avec le statut {status}."));
+        Err(detail)
+    }
+}
+
+#[tauri::command]
+fn open_project_folder(path: String) -> Result<(), String> {
+    let directory = PathBuf::from(path)
+        .canonicalize()
+        .map_err(|_| "Le dossier associé au projet est inaccessible.".to_string())?;
+    if !directory.is_dir() {
+        return Err("Le chemin associé n’est pas un dossier.".to_string());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Command::new("xdg-open")
+            .arg(&directory)
+            .spawn()
+            .map_err(|error| format!("Impossible d’ouvrir l’explorateur : {error}"))?;
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err("L’ouverture du dossier est disponible sous Linux.".to_string())
+}
+
+#[tauri::command]
+async fn get_runtime_info(app: AppHandle) -> Result<RuntimeInfoResponse, String> {
+    let config = read_server_config(&app)?;
+    let response = api_client(Duration::from_secs(20))?
+        .get(format!("{}/api/v1/runtime", config.server_url))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .send()
+        .await
+        .map_err(|error| format!("Informations serveur indisponibles : {error}"))?;
     parse_api_response(response).await
 }
 
@@ -1031,6 +1142,10 @@ pub fn run() {
             configure_server,
             test_server_connection,
             create_remote_project,
+            update_remote_project,
+            delete_remote_project,
+            open_project_folder,
+            get_runtime_info,
             list_remote_projects,
             submit_ocr_job,
             get_ocr_job,

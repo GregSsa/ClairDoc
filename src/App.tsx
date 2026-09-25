@@ -8,19 +8,23 @@ import {
   createOrganizationPlan,
   createRemoteProject,
   createServerBackup,
+  deleteRemoteProject,
   estimateProjectIndex,
   getIndexTask,
   getOcrJob,
   getOcrText,
   getServerConfig,
+  getRuntimeInfo,
   listDocumentFiles,
   listProjectDocuments,
   listProjectJobs,
   listRemoteProjects,
   pauseProjectOcr,
+  openProjectFolder,
   retryIndexTask,
   DocumentFile,
   DocumentLibrary,
+  LibraryDocument,
   AskResult,
   IndexResult,
   IndexEstimate,
@@ -28,11 +32,13 @@ import {
   OcrJob,
   OrganizationPlan,
   RemoteProject,
+  RuntimeInfo,
   submitOcrJob,
   testServerConnection,
   resumeProjectOcr,
   retryOcrJob,
   startIndexProject,
+  updateRemoteProject,
   undoOrganization,
 } from "./server";
 import "./App.css";
@@ -91,7 +97,7 @@ type BackupState =
   | { status: "saved"; path: string; size: number }
   | { status: "error"; message: string };
 
-type WorkspaceView = "home" | "library" | "assistant" | "import" | "settings";
+type WorkspaceView = "home" | "library" | "relations" | "assistant" | "import" | "settings";
 
 type LibraryState =
   | { status: "idle" }
@@ -178,6 +184,15 @@ function App() {
   const [documentSearch, setDocumentSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("Toutes");
   const [linkFilter, setLinkFilter] = useState("Tous");
+  const [theme, setTheme] = useState<"light" | "dark">(() =>
+    localStorage.getItem("clairdoc-theme") === "dark" ? "dark" : "light",
+  );
+  const [projectMenu, setProjectMenu] = useState<string | null>(null);
+  const [runtimeInfo, setRuntimeInfo] = useState<RuntimeInfo | null>(null);
+  const [relationSearch, setRelationSearch] = useState("");
+  const [relationKind, setRelationKind] = useState("Tous");
+  const [focusDocument, setFocusDocument] = useState("Tous");
+  const connected = connection.status === "connected";
 
   useEffect(() => {
     let active = true;
@@ -208,6 +223,11 @@ function App() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("clairdoc-theme", theme);
+  }, [theme]);
 
   useEffect(() => {
     if (connection.status !== "connected") return;
@@ -345,7 +365,7 @@ function App() {
   }, [rag]);
 
   useEffect(() => {
-    if (project.status !== "ready" || activeView !== "library") return;
+    if (project.status !== "ready" || !["library", "relations"].includes(activeView)) return;
     let active = true;
     setLibrary({ status: "loading" });
     listProjectDocuments(project.project.id)
@@ -358,6 +378,11 @@ function App() {
       active = false;
     };
   }, [activeView, project, projectJobs.length, rag.status]);
+
+  useEffect(() => {
+    if (!connected || activeView !== "settings") return;
+    getRuntimeInfo().then(setRuntimeInfo).catch(() => setRuntimeInfo(null));
+  }, [activeView, connected]);
 
   async function saveServer(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -382,6 +407,53 @@ function App() {
     setOrganization({ status: "idle" });
     setLibrary({ status: "idle" });
     setQuestion("");
+    setProjectMenu(null);
+  }
+
+  async function renameProject(item: RemoteProject) {
+    const name = window.prompt("Nouveau nom du projet", item.name)?.trim();
+    if (!name || name === item.name) return;
+    try {
+      const updated = await updateRemoteProject(item.id, name);
+      setProjects((current) => current.map((candidate) => candidate.id === item.id ? updated : candidate));
+      if (project.status === "ready" && project.project.id === item.id) {
+        setProject({ status: "ready", project: updated });
+      }
+    } catch (error) {
+      window.alert(errorMessage(error, "Impossible de renommer le projet."));
+    } finally {
+      setProjectMenu(null);
+    }
+  }
+
+  async function removeProject(item: RemoteProject) {
+    const confirmed = window.confirm(
+      `Supprimer le projet « ${item.name} » de ClairDoc ?\n\nLes originaux ne seront pas supprimés. Les index, textes extraits et copies serveur de ce projet seront effacés.`,
+    );
+    if (!confirmed) return;
+    try {
+      await deleteRemoteProject(item.id);
+      setProjects((current) => current.filter((candidate) => candidate.id !== item.id));
+      if (project.status === "ready" && project.project.id === item.id) selectProject();
+    } catch (error) {
+      window.alert(errorMessage(error, "Impossible de supprimer le projet."));
+    } finally {
+      setProjectMenu(null);
+    }
+  }
+
+  async function revealProject(item: RemoteProject) {
+    if (!item.sourceRoot) {
+      window.alert("Ce projet n’a pas encore de dossier source associé. Ajoutez d’abord un dossier.");
+      return;
+    }
+    try {
+      await openProjectFolder(item.sourceRoot);
+    } catch (error) {
+      window.alert(errorMessage(error, "Impossible d’ouvrir le dossier."));
+    } finally {
+      setProjectMenu(null);
+    }
   }
 
   async function quickCreateProject(event: FormEvent<HTMLFormElement>) {
@@ -430,7 +502,7 @@ function App() {
     if (scan.status !== "ready") return;
     setProject({ status: "creating" });
     try {
-      const created = await createRemoteProject(scan.summary.folderName);
+      const created = await createRemoteProject(scan.summary.folderName, scan.summary.rootPath);
       setProject({ status: "ready", project: created });
       setProjects((current) => [created, ...current.filter((item) => item.id !== created.id)]);
     } catch (error) {
@@ -442,6 +514,15 @@ function App() {
     if (scan.status !== "ready" || project.status !== "ready") return;
     setBatch({ status: "discovering" });
     try {
+      if (!project.project.sourceRoot) {
+        const updated = await updateRemoteProject(
+          project.project.id,
+          undefined,
+          scan.summary.rootPath,
+        );
+        setProject({ status: "ready", project: updated });
+        setProjects((current) => current.map((item) => item.id === updated.id ? updated : item));
+      }
       const files = await listDocumentFiles(scan.summary.rootPath);
       if (files.length === 0) {
         setBatch({
@@ -681,7 +762,6 @@ function App() {
     }
   }
 
-  const connected = connection.status === "connected";
   const indexResult = "result" in rag ? rag.result : undefined;
   const organizationPlan = "plan" in organization ? organization.plan : undefined;
   const completedJobs = projectJobs.filter((job) => job.status === "completed");
@@ -713,6 +793,39 @@ function App() {
     const matchesLink = linkFilter === "Tous" || linkedDocumentIds.has(document.jobId);
     return matchesSearch && matchesCategory && matchesLink;
   });
+  const relationQuery = relationSearch.trim().toLocaleLowerCase("fr");
+  const searchedRelationIds = new Set(
+    (libraryData?.documents ?? [])
+      .filter((document) => !relationQuery || [document.name, document.category, document.organization ?? "", ...document.people]
+        .some((value) => value.toLocaleLowerCase("fr").includes(relationQuery)))
+      .map((document) => document.jobId),
+  );
+  const visibleRelationships = (libraryData?.relationships ?? []).filter((relationship) => {
+    const matchesKind = relationKind === "Tous" || relationship.kind === relationKind;
+    const matchesFocus = focusDocument === "Tous"
+      || relationship.sourceJobId === focusDocument
+      || relationship.targetJobId === focusDocument;
+    const matchesSearch = !relationQuery
+      || searchedRelationIds.has(relationship.sourceJobId)
+      || searchedRelationIds.has(relationship.targetJobId);
+    return matchesKind && matchesFocus && matchesSearch;
+  });
+  const visibleRelationIds = new Set(visibleRelationships.flatMap((relationship) => [
+    relationship.sourceJobId,
+    relationship.targetJobId,
+  ]));
+  if (focusDocument !== "Tous") visibleRelationIds.add(focusDocument);
+  const relationDocuments = (libraryData?.documents ?? []).filter((document) =>
+    (focusDocument === "Tous" && !relationQuery && relationKind === "Tous")
+      ? true
+      : visibleRelationIds.has(document.jobId),
+  );
+  const relationGroups = Object.entries(
+    relationDocuments.reduce<Record<string, LibraryDocument[]>>((groups, document) => {
+      (groups[document.category] ??= []).push(document);
+      return groups;
+    }, {}),
+  ).sort(([left], [right]) => left.localeCompare(right, "fr"));
 
   return (
     <div className="app-shell">
@@ -722,6 +835,7 @@ function App() {
           {([
             ["home", "⌂", "Projets"],
             ["library", "▤", "Documents"],
+            ["relations", "⌘", "Relations"],
             ["assistant", "✦", "Assistant"],
             ["import", "+", "Ajouter"],
           ] as const).map(([view, icon, label]) => (
@@ -740,7 +854,7 @@ function App() {
           <small>{activeView === "home" ? "ESPACE DE TRAVAIL" : project.status === "ready" ? "PROJET ACTIF" : "CLAIRDOC"}</small>
           <strong>{activeView === "home" ? "Mes projets" : project.status === "ready" ? project.project.name : "Choisissez un projet"}</strong>
         </div>
-        <div className="privacy-note"><ShieldIcon /><span>Vos originaux restent inchangés</span></div>
+        <div className="topbar-actions"><div className="privacy-note"><ShieldIcon /><span>Vos originaux restent inchangés</span></div><button className="theme-toggle" onClick={() => setTheme(theme === "light" ? "dark" : "light")} aria-label={theme === "light" ? "Activer le mode sombre" : "Activer le mode clair"}>{theme === "light" ? "☾" : "☀"}</button></div>
       </header>
 
       <main className="main-content">
@@ -754,7 +868,7 @@ function App() {
               </article>
               {projects.map((item) => (
                 <article className={`project-card ${project.status === "ready" && project.project.id === item.id ? "selected" : ""}`} key={item.id}>
-                  <div className="project-card-top"><span className="project-folder"><FolderIcon /></span><span className="more-dot">•••</span></div>
+                  <div className="project-card-top"><span className="project-folder"><FolderIcon /></span><button className="project-menu-button" aria-label={`Options de ${item.name}`} onClick={() => setProjectMenu(projectMenu === item.id ? null : item.id)}>•••</button>{projectMenu === item.id && <div className="project-menu"><button onClick={() => renameProject(item)}>Renommer</button><button onClick={() => revealProject(item)} disabled={!item.sourceRoot}>Ouvrir dans l’explorateur</button><button className="danger" onClick={() => removeProject(item)}>Supprimer</button></div>}</div>
                   <h2>{item.name}</h2><p>Documents, recherche et classement associés à ce projet.</p>
                   <button className="secondary-button" onClick={() => { selectProject(item); setActiveView("library"); }}>Ouvrir le projet</button>
                 </article>
@@ -789,6 +903,32 @@ function App() {
                     {filteredDocuments.length === 0 && <div className="no-results">Aucun document ne correspond à ces filtres.</div>}
                   </div>
                 )}
+              </>
+            )}
+          </section>
+        )}
+
+        {activeView === "relations" && (
+          <section className="relations-view">
+            <div className="page-heading compact"><div><p className="eyebrow">Cartographie</p><h1>Arbre du projet</h1><p>Explorez les catégories et limitez l’arbre aux documents reliés à une recherche ou à un document précis.</p></div></div>
+            {project.status !== "ready" ? <div className="blank-panel"><h2>Aucun projet sélectionné</h2><button className="secondary-button" onClick={() => setActiveView("home")}>Choisir un projet</button></div> : (
+              <>
+                <div className="relation-toolbar">
+                  <input type="search" value={relationSearch} onChange={(event) => setRelationSearch(event.target.value)} placeholder="Rechercher une personne, un organisme…" />
+                  <select value={focusDocument} onChange={(event) => setFocusDocument(event.target.value)}><option value="Tous">Tous les documents</option>{libraryData?.documents.map((document) => <option value={document.jobId} key={document.jobId}>{document.name}</option>)}</select>
+                  <select value={relationKind} onChange={(event) => setRelationKind(event.target.value)}><option value="Tous">Tous les types de liens</option><option value="organization">Organisme</option><option value="person">Personne</option><option value="category">Catégorie</option><option value="year">Année</option></select>
+                </div>
+                {library.status === "loading" && <div className="blank-panel"><span className="mini-spinner" /><p>Construction de l’arbre…</p></div>}
+                {libraryData && <div className="relation-canvas">
+                  <div className="tree-root"><span className="tree-root-icon"><FolderIcon /></span><div><strong>{project.project.name}</strong><small>{relationDocuments.length} document(s) · {visibleRelationships.length} lien(s) affiché(s)</small></div></div>
+                  <div className="tree-groups">
+                    {relationGroups.map(([category, documents]) => <section className="tree-branch" key={category}><div className="tree-category"><span /> <strong>{category}</strong><small>{documents.length}</small></div><div className="tree-documents">{documents.map((document) => {
+                      const documentLinks = visibleRelationships.filter((relationship) => relationship.sourceJobId === document.jobId || relationship.targetJobId === document.jobId);
+                      return <article className={`tree-document ${document.jobId === focusDocument ? "focused" : ""}`} key={document.jobId}><div className="tree-document-title"><span>▤</span><div><strong>{document.name}</strong><small>{document.organization ?? document.sourceRelativePath}</small></div></div><div className="tree-links">{documentLinks.slice(0, 4).map((link, index) => <span key={`${link.sourceJobId}-${link.targetJobId}-${link.kind}-${index}`}>{link.kind === "organization" ? "Organisme" : link.kind === "person" ? "Personne" : link.kind === "category" ? "Catégorie" : "Année"} · {link.label}</span>)}</div></article>;
+                    })}</div></section>)}
+                    {relationGroups.length === 0 && <div className="no-results">Aucun document relié ne correspond à ces filtres.</div>}
+                  </div>
+                </div>}
               </>
             )}
           </section>
@@ -864,6 +1004,25 @@ function App() {
             </label>
           )}
         </section>
+
+        {activeView === "settings" && (
+          <section className="settings-grid">
+            <article className="settings-panel">
+              <div className="settings-title"><span>✦</span><div><h2>Intelligence artificielle</h2><p>Modèles utilisés par le serveur pour ce poste.</p></div></div>
+              <dl><div><dt>Modèle de réponse</dt><dd>{runtimeInfo?.llmModel ?? "—"}</dd></div><div><dt>Modèle d’embeddings</dt><dd>{runtimeInfo?.embeddingModel ?? "—"}</dd></div><div><dt>Dimensions</dt><dd>{runtimeInfo?.embeddingDimensions ?? "—"}</dd></div><div><dt>Clé OpenAI</dt><dd>{runtimeInfo?.openaiConfigured ? "Configurée" : "Non configurée"}</dd></div></dl>
+              <p className="settings-explanation">Les embeddings servent à retrouver les passages pertinents. Le modèle de réponse reçoit uniquement ces extraits, pas l’intégralité de vos dossiers.</p>
+            </article>
+            <article className="settings-panel">
+              <div className="settings-title"><span>◫</span><div><h2>Traitement local</h2><p>OCR, stockage et limites de sécurité.</p></div></div>
+              <dl><div><dt>Langues OCR</dt><dd>{runtimeInfo?.ocrLanguages ?? "—"}</dd></div><div><dt>Taille maximale</dt><dd>{runtimeInfo ? `${runtimeInfo.maxUploadMb} Mo` : "—"}</dd></div><div><dt>Limite d’indexation</dt><dd>{runtimeInfo ? `${formatNumber(runtimeInfo.maxIndexTokens)} tokens` : "—"}</dd></div><div><dt>Connexion chiffrée</dt><dd>{runtimeInfo?.tlsEnabled ? "TLS actif" : "Réseau local"}</dd></div></dl>
+              <p className="settings-path">Données : {runtimeInfo?.dataDir ?? "Connexion au serveur requise"}</p>
+            </article>
+            <article className="settings-panel appearance-panel">
+              <div className="settings-title"><span>{theme === "light" ? "☾" : "☀"}</span><div><h2>Apparence</h2><p>Choisissez le thème le plus confortable.</p></div></div>
+              <div className="theme-choice"><button className={theme === "light" ? "selected" : ""} onClick={() => setTheme("light")}><span>☀</span>Clair</button><button className={theme === "dark" ? "selected" : ""} onClick={() => setTheme("dark")}><span>☾</span>Sombre</button></div>
+            </article>
+          </section>
+        )}
 
         <section className={`hero ${activeView !== "import" ? "view-hidden" : ""}`} aria-labelledby="page-title">
           <p className="eyebrow">Nouveau classement</p>

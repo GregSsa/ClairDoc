@@ -30,6 +30,11 @@ Application de bureau destinée à aider les utilisateurs à inventorier, recher
 - filtrage des relations détectées entre documents (organisme, personne, catégorie et année) ;
 - assistant conversationnel isolé par projet ;
 - espace d'ajout guidé pour un dossier complet ou un document individuel ;
+- menu de projet permettant de renommer, supprimer ou ouvrir le dossier source ;
+- suppression limitée aux données ClairDoc, sans toucher aux fichiers originaux ;
+- mode sombre persistant ;
+- page de paramètres détaillant les modèles IA, l'OCR, le stockage et les limites ;
+- cartographie en arbre avec filtres par recherche, document et type de relation ;
 - aucun déplacement ou renommage des originaux ; un PDF n'est envoyé au serveur qu'après une action explicite.
 
 ## Développement

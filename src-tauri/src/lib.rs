@@ -149,6 +149,39 @@ struct BackupResponse {
 }
 
 #[derive(Deserialize, Serialize)]
+#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+struct DocumentSummaryResponse {
+    job_id: String,
+    name: String,
+    source_relative_path: String,
+    status: String,
+    category: String,
+    document_date: Option<String>,
+    organization: Option<String>,
+    people: Vec<String>,
+    amounts: Vec<String>,
+    chunks: u64,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+struct DocumentRelationshipResponse {
+    source_job_id: String,
+    target_job_id: String,
+    kind: String,
+    label: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+struct DocumentLibraryResponse {
+    project_id: String,
+    documents: Vec<DocumentSummaryResponse>,
+    categories: Vec<String>,
+    relationships: Vec<DocumentRelationshipResponse>,
+}
+
+#[derive(Deserialize, Serialize)]
 struct CitationResponse {
     document_name: String,
     job_id: String,
@@ -560,6 +593,24 @@ async fn create_server_backup(app: AppHandle) -> Result<BackupResponse, String> 
         .send()
         .await
         .map_err(|error| format!("Sauvegarde des métadonnées impossible : {error}"))?;
+    parse_api_response(response).await
+}
+
+#[tauri::command]
+async fn list_project_documents(
+    app: AppHandle,
+    project_id: String,
+) -> Result<DocumentLibraryResponse, String> {
+    let config = read_server_config(&app)?;
+    let response = api_client(Duration::from_secs(30))?
+        .get(format!(
+            "{}/api/v1/projects/{project_id}/documents",
+            config.server_url
+        ))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .send()
+        .await
+        .map_err(|error| format!("Chargement de la bibliothèque impossible : {error}"))?;
     parse_api_response(response).await
 }
 
@@ -994,6 +1045,7 @@ pub fn run() {
             get_index_task,
             retry_index_task,
             create_server_backup,
+            list_project_documents,
             ask_project,
             list_document_files,
             create_organization_plan,

@@ -25,6 +25,11 @@ Application de bureau destinée à aider les utilisateurs à inventorier, recher
 - estimation des tokens et du coût avant confirmation de l'indexation ;
 - suivi d'une indexation persistante en arrière-plan et relance après échec ;
 - création manuelle d'une sauvegarde ZIP des métadonnées du serveur ;
+- tableau de bord moderne avec navigation par projet ;
+- bibliothèque documentaire avec recherche et filtres par catégorie ;
+- filtrage des relations détectées entre documents (organisme, personne, catégorie et année) ;
+- assistant conversationnel isolé par projet ;
+- espace d'ajout guidé pour un dossier complet ou un document individuel ;
 - aucun déplacement ou renommage des originaux ; un PDF n'est envoyé au serveur qu'après une action explicite.
 
 ## Développement

@@ -64,6 +64,33 @@ export type BackupResult = {
   createdAt: string;
 };
 
+export type LibraryDocument = {
+  jobId: string;
+  name: string;
+  sourceRelativePath: string;
+  status: "ready" | "indexed";
+  category: string;
+  documentDate: string | null;
+  organization: string | null;
+  people: string[];
+  amounts: string[];
+  chunks: number;
+};
+
+export type DocumentRelationship = {
+  sourceJobId: string;
+  targetJobId: string;
+  kind: "organization" | "person" | "category" | "year";
+  label: string;
+};
+
+export type DocumentLibrary = {
+  projectId: string;
+  documents: LibraryDocument[];
+  categories: string[];
+  relationships: DocumentRelationship[];
+};
+
 export type Citation = {
   document_name: string;
   job_id: string;
@@ -180,6 +207,10 @@ export function retryIndexTask(taskId: string) {
 
 export function createServerBackup() {
   return invoke<BackupResult>("create_server_backup");
+}
+
+export function listProjectDocuments(projectId: string) {
+  return invoke<DocumentLibrary>("list_project_documents", { projectId });
 }
 
 export function askProject(projectId: string, question: string) {

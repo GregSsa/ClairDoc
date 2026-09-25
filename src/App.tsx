@@ -14,11 +14,13 @@ import {
   getOcrText,
   getServerConfig,
   listDocumentFiles,
+  listProjectDocuments,
   listProjectJobs,
   listRemoteProjects,
   pauseProjectOcr,
   retryIndexTask,
   DocumentFile,
+  DocumentLibrary,
   AskResult,
   IndexResult,
   IndexEstimate,
@@ -87,6 +89,14 @@ type BackupState =
   | { status: "idle" }
   | { status: "saving" }
   | { status: "saved"; path: string; size: number }
+  | { status: "error"; message: string };
+
+type WorkspaceView = "home" | "library" | "assistant" | "import" | "settings";
+
+type LibraryState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "ready"; data: DocumentLibrary }
   | { status: "error"; message: string };
 
 type BatchState =
@@ -162,6 +172,12 @@ function App() {
   const [organization, setOrganization] = useState<OrganizationState>({ status: "idle" });
   const [selectedPlanEntries, setSelectedPlanEntries] = useState<string[]>([]);
   const [backup, setBackup] = useState<BackupState>({ status: "idle" });
+  const [activeView, setActiveView] = useState<WorkspaceView>("home");
+  const [newProjectName, setNewProjectName] = useState("");
+  const [library, setLibrary] = useState<LibraryState>({ status: "idle" });
+  const [documentSearch, setDocumentSearch] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("Toutes");
+  const [linkFilter, setLinkFilter] = useState("Tous");
 
   useEffect(() => {
     let active = true;
@@ -328,6 +344,21 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [rag]);
 
+  useEffect(() => {
+    if (project.status !== "ready" || activeView !== "library") return;
+    let active = true;
+    setLibrary({ status: "loading" });
+    listProjectDocuments(project.project.id)
+      .then((data) => active && setLibrary({ status: "ready", data }))
+      .catch((error) => active && setLibrary({
+        status: "error",
+        message: errorMessage(error, "Impossible de charger les documents."),
+      }));
+    return () => {
+      active = false;
+    };
+  }, [activeView, project, projectJobs.length, rag.status]);
+
   async function saveServer(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setConnection({ status: "testing" });
@@ -341,6 +372,31 @@ function App() {
         status: "error",
         message: errorMessage(error, "La configuration n’a pas pu être enregistrée."),
       });
+    }
+  }
+
+  function selectProject(selected?: RemoteProject) {
+    setProject(selected ? { status: "ready", project: selected } : { status: "idle" });
+    setBatch({ status: "idle" });
+    setRag({ status: "idle" });
+    setOrganization({ status: "idle" });
+    setLibrary({ status: "idle" });
+    setQuestion("");
+  }
+
+  async function quickCreateProject(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = newProjectName.trim();
+    if (!name) return;
+    setProject({ status: "creating" });
+    try {
+      const created = await createRemoteProject(name);
+      setProjects((current) => [created, ...current.filter((item) => item.id !== created.id)]);
+      setProject({ status: "ready", project: created });
+      setNewProjectName("");
+      setActiveView("import");
+    } catch (error) {
+      setProject({ status: "error", message: errorMessage(error, "Le projet n’a pas pu être créé.") });
     }
   }
 
@@ -638,16 +694,127 @@ function App() {
     (completedJobs.length > 0 || ocr.status === "completed") &&
     pendingJobs.length === 0 &&
     !importStillSending;
+  const libraryData = library.status === "ready" ? library.data : undefined;
+  const linkedDocumentIds = new Set(
+    (libraryData?.relationships ?? [])
+      .filter((relationship) => linkFilter === "Tous" || relationship.kind === linkFilter)
+      .flatMap((relationship) => [relationship.sourceJobId, relationship.targetJobId]),
+  );
+  const filteredDocuments = (libraryData?.documents ?? []).filter((document) => {
+    const query = documentSearch.trim().toLocaleLowerCase("fr");
+    const matchesSearch = !query || [
+      document.name,
+      document.sourceRelativePath,
+      document.category,
+      document.organization ?? "",
+      ...document.people,
+    ].some((value) => value.toLocaleLowerCase("fr").includes(query));
+    const matchesCategory = categoryFilter === "Toutes" || document.category === categoryFilter;
+    const matchesLink = linkFilter === "Tous" || linkedDocumentIds.has(document.jobId);
+    return matchesSearch && matchesCategory && matchesLink;
+  });
 
   return (
     <div className="app-shell">
+      <aside className="sidebar" aria-label="Navigation principale">
+        <div className="brand sidebar-brand" aria-label="ClairDoc"><span className="brand-mark"><FolderIcon /></span><span>ClairDoc</span></div>
+        <nav>
+          {([
+            ["home", "⌂", "Projets"],
+            ["library", "▤", "Documents"],
+            ["assistant", "✦", "Assistant"],
+            ["import", "+", "Ajouter"],
+          ] as const).map(([view, icon, label]) => (
+            <button key={view} className={activeView === view ? "active" : ""} onClick={() => setActiveView(view)}>
+              <span aria-hidden="true">{icon}</span>{label}
+            </button>
+          ))}
+        </nav>
+        <div className="sidebar-footer">
+          <button className={activeView === "settings" ? "active" : ""} onClick={() => setActiveView("settings")}><span aria-hidden="true">⚙</span>Paramètres</button>
+          <div className={`server-pill ${connected ? "online" : ""}`}><span />{connected ? "Serveur connecté" : "Serveur hors ligne"}</div>
+        </div>
+      </aside>
       <header className="topbar">
-        <div className="brand" aria-label="ClairDoc"><span className="brand-mark"><FolderIcon /></span><span>ClairDoc</span></div>
+        <div>
+          <small>{activeView === "home" ? "ESPACE DE TRAVAIL" : project.status === "ready" ? "PROJET ACTIF" : "CLAIRDOC"}</small>
+          <strong>{activeView === "home" ? "Mes projets" : project.status === "ready" ? project.project.name : "Choisissez un projet"}</strong>
+        </div>
         <div className="privacy-note"><ShieldIcon /><span>Vos originaux restent inchangés</span></div>
       </header>
 
       <main className="main-content">
-        <section className="server-card" aria-labelledby="server-title">
+        {activeView === "home" && (
+          <section className="dashboard-view">
+            <div className="page-heading"><div><p className="eyebrow">Vue d’ensemble</p><h1>Vos documents, enfin clairs.</h1><p>Créez un espace par thème, personne ou activité. Chaque projet garde ses documents, ses liens et ses conversations séparés.</p></div><button className="primary-button" onClick={() => setActiveView("import")}>+ Ajouter des documents</button></div>
+            <div className="dashboard-grid">
+              <article className="new-project-card">
+                <div className="card-icon">+</div><h2>Nouveau projet</h2><p>Créez d’abord un espace vide, puis ajoutez un dossier complet ou quelques documents.</p>
+                <form onSubmit={quickCreateProject}><input value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} placeholder="Ex. Administratif 2026" maxLength={120} required /><button className="primary-button" disabled={!connected || project.status === "creating"}>Créer</button></form>
+              </article>
+              {projects.map((item) => (
+                <article className={`project-card ${project.status === "ready" && project.project.id === item.id ? "selected" : ""}`} key={item.id}>
+                  <div className="project-card-top"><span className="project-folder"><FolderIcon /></span><span className="more-dot">•••</span></div>
+                  <h2>{item.name}</h2><p>Documents, recherche et classement associés à ce projet.</p>
+                  <button className="secondary-button" onClick={() => { selectProject(item); setActiveView("library"); }}>Ouvrir le projet</button>
+                </article>
+              ))}
+            </div>
+            {projects.length === 0 && connected && <p className="empty-hint">Aucun projet pour le moment. Créez votre premier espace ci-dessus.</p>}
+          </section>
+        )}
+
+        {activeView === "library" && (
+          <section className="library-view">
+            <div className="page-heading compact"><div><p className="eyebrow">Bibliothèque</p><h1>Documents</h1><p>Retrouvez un fichier par son contenu, sa catégorie ou les liens détectés.</p></div><button className="primary-button" onClick={() => setActiveView("import")}>+ Ajouter</button></div>
+            {project.status !== "ready" ? <div className="blank-panel"><FolderIcon /><h2>Sélectionnez un projet</h2><p>Ouvrez un projet depuis l’accueil pour afficher ses documents.</p><button className="secondary-button" onClick={() => setActiveView("home")}>Voir mes projets</button></div> : (
+              <>
+                <div className="library-toolbar">
+                  <input type="search" value={documentSearch} onChange={(event) => setDocumentSearch(event.target.value)} placeholder="Rechercher un document, une personne, un organisme…" />
+                  <select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option>Toutes</option>{libraryData?.categories.map((category) => <option key={category}>{category}</option>)}</select>
+                  <select value={linkFilter} onChange={(event) => setLinkFilter(event.target.value)}><option value="Tous">Tous les liens</option><option value="organization">Même organisme</option><option value="person">Même personne</option><option value="category">Même catégorie</option><option value="year">Même année</option></select>
+                </div>
+                {library.status === "loading" && <div className="blank-panel"><span className="mini-spinner" /><p>Chargement de la bibliothèque…</p></div>}
+                {library.status === "error" && <div className="blank-panel error-result"><h2>Bibliothèque indisponible</h2><p>{library.message}</p></div>}
+                {libraryData && (
+                  <div className="document-browser">
+                    <div className="browser-summary"><strong>{filteredDocuments.length} document(s)</strong><span>{libraryData.relationships.length} lien(s) détecté(s)</span></div>
+                    <div className="document-table" role="table" aria-label="Documents du projet">
+                      <div className="document-row table-head" role="row"><span>Nom</span><span>Catégorie</span><span>Date</span><span>Relations</span><span>État</span></div>
+                      {filteredDocuments.map((document) => {
+                        const relations = libraryData.relationships.filter((link) => link.sourceJobId === document.jobId || link.targetJobId === document.jobId);
+                        return <article className="document-row" role="row" key={document.jobId}><span className="document-name"><b>{document.name}</b><small>{document.sourceRelativePath}</small></span><span><i className="category-chip">{document.category}</i></span><span>{document.documentDate ?? "—"}</span><span>{relations.length ? <span className="link-count">⌁ {relations.length}</span> : "—"}</span><span className={`status-chip ${document.status}`}>{document.status === "indexed" ? "Indexé" : "Prêt"}</span></article>;
+                      })}
+                    </div>
+                    {filteredDocuments.length === 0 && <div className="no-results">Aucun document ne correspond à ces filtres.</div>}
+                  </div>
+                )}
+              </>
+            )}
+          </section>
+        )}
+
+        {activeView === "assistant" && (
+          <section className="assistant-view">
+            <div className="page-heading compact"><div><p className="eyebrow">Assistant documentaire</p><h1>Posez une question à vos documents</h1><p>Les réponses restent limitées au projet actif et affichent leurs sources.</p></div></div>
+            {project.status !== "ready" ? <div className="blank-panel"><h2>Aucun projet sélectionné</h2><button className="secondary-button" onClick={() => setActiveView("home")}>Choisir un projet</button></div> : (
+              <div className="assistant-layout">
+                <div className="chat-card">
+                  <div className="chat-intro"><span>✦</span><div><strong>Assistant de {project.project.name}</strong><p>Demandez une date, un montant, un organisme ou une synthèse.</p></div></div>
+                  {!indexResult && rag.status === "idle" && <div className="index-callout"><div><strong>Préparer la recherche intelligente</strong><p>ClairDoc doit créer l’index sémantique de ce projet avant la première question.</p></div><button className="primary-button" onClick={buildIndex}>Estimer l’indexation</button></div>}
+                  {rag.status === "estimating" && <div className="ocr-progress"><span className="mini-spinner" /> Estimation en cours…</div>}
+                  {rag.status === "estimate" && <div className="index-estimate"><strong>{formatNumber(rag.estimate.estimatedTokens)} tokens estimés</strong><p>{rag.estimate.documentsToEmbed} document(s) à encoder · coût approximatif {new Intl.NumberFormat("fr-FR", { style: "currency", currency: "USD", minimumFractionDigits: 4 }).format(rag.estimate.estimatedCostUsd)}</p><button className="primary-button" onClick={confirmIndex}>Confirmer</button></div>}
+                  {rag.status === "indexing" && <div className="ocr-progress"><span className="mini-spinner" /> Préparation de l’assistant…</div>}
+                  {rag.status === "error" && <div className="error-result"><p>{rag.message}</p>{rag.task && <button className="secondary-button" onClick={retryIndex}>Relancer</button>}</div>}
+                  {rag.status === "answered" && <div className="conversation"><div className="user-message">{question}</div><div className="assistant-message"><span>✦</span><div><p>{rag.answer.answer}</p><div className="source-list">{rag.answer.citations.map((citation, index) => <button type="button" key={`${citation.job_id}-${citation.chunk_index}`}><b>[{index + 1}] {citation.document_name}</b><small>{citation.page_number ? `Page ${citation.page_number} · ` : ""}{citation.excerpt}</small></button>)}</div></div></div></div>}
+                  {indexResult && <form className="chat-composer" onSubmit={ask}><textarea value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Posez votre question sur ce projet…" minLength={3} maxLength={4000} required /><button className="primary-button" disabled={rag.status === "asking"}>{rag.status === "asking" ? "…" : "Envoyer"}</button></form>}
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
+        <section className={`server-card ${activeView !== "settings" ? "view-hidden" : ""}`} aria-labelledby="server-title">
           <div className="server-heading">
             <div><p className="eyebrow">Serveur local</p><h2 id="server-title">Connexion à ClairDoc Server</h2></div>
             <span className={`connection-badge ${connected ? "online" : "offline"}`}>
@@ -688,10 +855,7 @@ function App() {
                 value={project.status === "ready" ? project.project.id : ""}
                 onChange={(event) => {
                   const selected = projects.find((item) => item.id === event.target.value);
-                  setProject(selected ? { status: "ready", project: selected } : { status: "idle" });
-                  setBatch({ status: "idle" });
-                  setRag({ status: "idle" });
-                  setOrganization({ status: "idle" });
+                  selectProject(selected);
                 }}
               >
                 <option value="">Créer un nouveau projet</option>
@@ -701,13 +865,13 @@ function App() {
           )}
         </section>
 
-        <section className="hero" aria-labelledby="page-title">
+        <section className={`hero ${activeView !== "import" ? "view-hidden" : ""}`} aria-labelledby="page-title">
           <p className="eyebrow">Nouveau classement</p>
           <h1 id="page-title">Commençons par vos documents</h1>
           <p className="hero-copy">Choisissez un dossier. Nous allons uniquement compter et identifier les fichiers qu’il contient, sans les déplacer ni les modifier.</p>
         </section>
 
-        <section className="workspace-card" aria-live="polite">
+        <section className={`workspace-card ${activeView !== "import" ? "view-hidden" : ""}`} aria-live="polite">
           {scan.status === "idle" && (
             <div className="empty-state">
               <div className="folder-illustration"><FolderIcon /></div>
@@ -853,7 +1017,7 @@ function App() {
           )}
         </section>
 
-        <section className="steps" aria-label="Étapes du classement">
+        <section className={`steps ${activeView !== "import" ? "view-hidden" : ""}`} aria-label="Étapes du classement">
           <div className="step active"><span>1</span><div><strong>Choisir</strong><small>Votre dossier</small></div></div><div className="step-line" />
           <div className={`step ${project.status === "ready" ? "active" : ""}`}><span>2</span><div><strong>Analyser</strong><small>Vos documents</small></div></div><div className="step-line" />
           <div className={`step ${ocr.status === "completed" ? "active" : ""}`}><span>3</span><div><strong>Vérifier</strong><small>Les résultats</small></div></div>

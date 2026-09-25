@@ -7,7 +7,11 @@ Application de bureau destinée à aider les utilisateurs à inventorier, recher
 - sélection native d'un dossier ;
 - analyse récursive en lecture seule ;
 - comptage des fichiers, sous-dossiers, PDF, images et documents bureautiques ;
-- aucun déplacement, renommage ou envoi réseau.
+- configuration et validation de ClairDoc Server ;
+- création d'un projet sur le serveur ;
+- envoi en flux d'un PDF vers OCRmyPDF ;
+- suivi du travail OCR et affichage du texte extrait ;
+- aucun déplacement ou renommage des originaux ; un PDF n'est envoyé au serveur qu'après une action explicite.
 
 ## Développement
 
@@ -43,5 +47,6 @@ npm run build
 
 ## État de l'intégration serveur
 
-L'application analyse actuellement un dossier local en lecture seule. Elle n'appelle pas encore ClairDoc Server. La prochaine étape consiste à ajouter la configuration de l'adresse du serveur et de la clé `CLAIRDOC_API_KEY`, puis l'envoi des PDF et le suivi des travaux OCR depuis l'interface.
+L'application communique avec ClairDoc Server depuis son backend Rust. Renseignez l'adresse du serveur et la même valeur `CLAIRDOC_API_KEY` que dans le fichier `.env` du serveur. La clé n'est jamais renvoyée au frontend après sa sauvegarde ; sous Linux, son fichier de configuration local est limité à l'utilisateur courant (`0600`).
 
+Par défaut, utilisez `http://127.0.0.1:8787` lorsque les deux programmes fonctionnent dans la même instance WSL. Si le serveur fonctionne sur une autre machine, utilisez son adresse privée et configurez `CLAIRDOC_HOST=0.0.0.0` côté serveur. N'exposez pas directement l'API sur Internet.

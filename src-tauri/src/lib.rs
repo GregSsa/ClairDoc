@@ -1,5 +1,258 @@
-use serde::Serialize;
-use std::{fs, path::PathBuf};
+use reqwest::{multipart, Client, Response, Url};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::{fs, path::PathBuf, time::Duration};
+use tauri::{AppHandle, Manager};
+
+const CONFIG_FILE_NAME: &str = "server-config.json";
+
+#[derive(Deserialize, Serialize)]
+struct ServerConfig {
+    server_url: String,
+    api_key: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServerConfigStatus {
+    server_url: String,
+    configured: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+struct ConnectionResponse {
+    status: String,
+    version: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct ProjectResponse {
+    id: String,
+    name: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct OcrJobResponse {
+    id: String,
+    project_id: Option<String>,
+    original_filename: String,
+    status: String,
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ApiError {
+    detail: Option<String>,
+}
+
+fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|directory| directory.join(CONFIG_FILE_NAME))
+        .map_err(|error| format!("Impossible de trouver le dossier de configuration : {error}"))
+}
+
+fn normalize_server_url(value: &str) -> Result<String, String> {
+    let value = value.trim().trim_end_matches('/');
+    let url = Url::parse(value).map_err(|_| "L’adresse du serveur est invalide.".to_string())?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err("L’adresse doit commencer par http:// ou https://.".to_string());
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err("L’adresse du serveur ne doit contenir ni paramètres ni fragment.".to_string());
+    }
+    Ok(value.to_string())
+}
+
+fn read_server_config(app: &AppHandle) -> Result<ServerConfig, String> {
+    let path = config_path(app)?;
+    let content = fs::read_to_string(path)
+        .map_err(|_| "Le serveur ClairDoc n’est pas encore configuré.".to_string())?;
+    serde_json::from_str(&content)
+        .map_err(|_| "La configuration du serveur est illisible.".to_string())
+}
+
+fn write_server_config(app: &AppHandle, config: &ServerConfig) -> Result<(), String> {
+    let path = config_path(app)?;
+    let directory = path
+        .parent()
+        .ok_or_else(|| "Dossier de configuration invalide.".to_string())?;
+    fs::create_dir_all(directory)
+        .map_err(|error| format!("Impossible de créer le dossier de configuration : {error}"))?;
+
+    let temporary_path = path.with_extension("json.tmp");
+    let content = serde_json::to_vec_pretty(config)
+        .map_err(|error| format!("Impossible de préparer la configuration : {error}"))?;
+    fs::write(&temporary_path, content)
+        .map_err(|error| format!("Impossible d’enregistrer la configuration : {error}"))?;
+    fs::rename(&temporary_path, &path)
+        .map_err(|error| format!("Impossible de finaliser la configuration : {error}"))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("Impossible de protéger la configuration : {error}"))?;
+    }
+
+    Ok(())
+}
+
+fn api_client(timeout: Duration) -> Result<Client, String> {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| format!("Impossible de préparer la connexion : {error}"))
+}
+
+async fn parse_api_response<T: DeserializeOwned>(response: Response) -> Result<T, String> {
+    if response.status().is_success() {
+        return response
+            .json::<T>()
+            .await
+            .map_err(|error| format!("Réponse du serveur illisible : {error}"));
+    }
+
+    let status = response.status();
+    let detail = response
+        .json::<ApiError>()
+        .await
+        .ok()
+        .and_then(|error| error.detail)
+        .unwrap_or_else(|| format!("Le serveur a répondu avec le statut {status}."));
+    Err(detail)
+}
+
+async fn verify_server(config: &ServerConfig) -> Result<ConnectionResponse, String> {
+    let response = api_client(Duration::from_secs(15))?
+        .get(format!("{}/api/v1/connection", config.server_url))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .send()
+        .await
+        .map_err(|error| format!("Serveur ClairDoc inaccessible : {error}"))?;
+    parse_api_response(response).await
+}
+
+#[tauri::command]
+fn get_server_config(app: AppHandle) -> Result<ServerConfigStatus, String> {
+    match read_server_config(&app) {
+        Ok(config) => Ok(ServerConfigStatus {
+            server_url: config.server_url,
+            configured: true,
+        }),
+        Err(_) => Ok(ServerConfigStatus {
+            server_url: "http://127.0.0.1:8787".to_string(),
+            configured: false,
+        }),
+    }
+}
+
+#[tauri::command]
+async fn configure_server(
+    app: AppHandle,
+    server_url: String,
+    api_key: String,
+) -> Result<ConnectionResponse, String> {
+    if api_key.trim().len() < 16 {
+        return Err("La clé ClairDoc doit contenir au moins 16 caractères.".to_string());
+    }
+    let config = ServerConfig {
+        server_url: normalize_server_url(&server_url)?,
+        api_key: api_key.trim().to_string(),
+    };
+    let connection = verify_server(&config).await?;
+    write_server_config(&app, &config)?;
+    Ok(connection)
+}
+
+#[tauri::command]
+async fn test_server_connection(app: AppHandle) -> Result<ConnectionResponse, String> {
+    verify_server(&read_server_config(&app)?).await
+}
+
+#[tauri::command]
+async fn create_remote_project(app: AppHandle, name: String) -> Result<ProjectResponse, String> {
+    let config = read_server_config(&app)?;
+    let response = api_client(Duration::from_secs(20))?
+        .post(format!("{}/api/v1/projects", config.server_url))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .json(&serde_json::json!({ "name": name }))
+        .send()
+        .await
+        .map_err(|error| format!("Création du projet impossible : {error}"))?;
+    parse_api_response(response).await
+}
+
+#[tauri::command]
+async fn submit_ocr_job(
+    app: AppHandle,
+    path: String,
+    project_id: Option<String>,
+) -> Result<OcrJobResponse, String> {
+    let pdf_path = PathBuf::from(&path);
+    if !pdf_path.is_file()
+        || pdf_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_none_or(|extension| !extension.eq_ignore_ascii_case("pdf"))
+    {
+        return Err("Sélectionnez un fichier PDF accessible.".to_string());
+    }
+
+    let config = read_server_config(&app)?;
+    let form = multipart::Form::new()
+        .file("file", &pdf_path)
+        .await
+        .map_err(|error| format!("Impossible de lire le PDF : {error}"))?;
+    let client = api_client(Duration::from_secs(7200))?;
+    let mut request = client
+        .post(format!("{}/api/v1/ocr/jobs", config.server_url))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .multipart(form);
+    if let Some(project_id) = project_id {
+        request = request.query(&[("project_id", project_id)]);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|error| format!("Envoi du PDF impossible : {error}"))?;
+    parse_api_response(response).await
+}
+
+#[tauri::command]
+async fn get_ocr_job(app: AppHandle, job_id: String) -> Result<OcrJobResponse, String> {
+    let config = read_server_config(&app)?;
+    let response = api_client(Duration::from_secs(20))?
+        .get(format!("{}/api/v1/ocr/jobs/{job_id}", config.server_url))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .send()
+        .await
+        .map_err(|error| format!("Suivi OCR impossible : {error}"))?;
+    parse_api_response(response).await
+}
+
+#[tauri::command]
+async fn get_ocr_text(app: AppHandle, job_id: String) -> Result<String, String> {
+    let config = read_server_config(&app)?;
+    let response = api_client(Duration::from_secs(30))?
+        .get(format!(
+            "{}/api/v1/ocr/jobs/{job_id}/text",
+            config.server_url
+        ))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .send()
+        .await
+        .map_err(|error| format!("Récupération du texte impossible : {error}"))?;
+    if response.status().is_success() {
+        return response
+            .text()
+            .await
+            .map_err(|error| format!("Texte OCR illisible : {error}"));
+    }
+    let status = response.status();
+    Err(format!("Le texte OCR n’est pas disponible ({status})."))
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -125,7 +378,16 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![scan_folder])
+        .invoke_handler(tauri::generate_handler![
+            scan_folder,
+            get_server_config,
+            configure_server,
+            test_server_connection,
+            create_remote_project,
+            submit_ocr_job,
+            get_ocr_job,
+            get_ocr_text
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

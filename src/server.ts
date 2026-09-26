@@ -49,6 +49,7 @@ export type DocumentFile = {
 export type IndexResult = {
   projectId: string;
   documentsIndexed: number;
+  documentsNameOnly: number;
   documentsReused: number;
   chunksIndexed: number;
   embeddingModel: string;
@@ -84,7 +85,8 @@ export type LibraryDocument = {
   jobId: string;
   name: string;
   sourceRelativePath: string;
-  status: "ready" | "indexed";
+  status: "ready" | "indexed" | "indexed_name";
+  textWarning: string | null;
   category: string;
   documentDate: string | null;
   organization: string | null;

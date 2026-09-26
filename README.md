@@ -115,3 +115,9 @@ Avant la création des embeddings, l'application affiche une estimation indicati
 Après un import, la section **Documents en échec** affiche les fichiers concernés.
 Cliquez sur un nom pour déplier le diagnostic serveur et l'identifiant du traitement.
 Corrigez la cause avant de relancer : le bouton de relance reprend les mêmes fichiers.
+
+**Mettre à jour l'index** reprend les anciens imports sans texte, notamment les PDF
+ayant une couche OCR inutilisable et les Word contenant des images de documents.
+Si aucun texte ne peut être récupéré après un OCR réussi, le statut **Indexé · nom seul**
+indique que seul le nom a été encodé. Le document reste trouvable, mais l'assistant ne
+peut pas répondre sur son contenu. Le résumé affiche le nombre de ces documents.

@@ -139,6 +139,8 @@ struct OcrJobResponse {
 struct IndexResponse {
     project_id: String,
     documents_indexed: u64,
+    #[serde(default)]
+    documents_name_only: u64,
     documents_reused: u64,
     chunks_indexed: u64,
     embedding_model: String,
@@ -189,6 +191,8 @@ struct DocumentSummaryResponse {
     people: Vec<String>,
     amounts: Vec<String>,
     chunks: u64,
+    #[serde(default)]
+    text_warning: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]

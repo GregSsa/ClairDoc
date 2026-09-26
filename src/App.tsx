@@ -1043,7 +1043,7 @@ function App() {
                       <div className="document-row table-head" role="row"><span>Nom</span><span>Catégorie</span><span>Date</span><span>Relations</span><span>État</span></div>
                       {filteredDocuments.map((document) => {
                         const relations = libraryData.relationships.filter((link) => link.sourceJobId === document.jobId || link.targetJobId === document.jobId);
-                        return <article className="document-row" role="row" key={document.jobId}><span className="document-name"><b>{document.name}</b><small>{document.sourceRelativePath}</small></span><span><i className="category-chip">{document.category}</i></span><span>{document.documentDate ?? "—"}</span><span>{relations.length ? <span className="link-count">⌁ {relations.length}</span> : "—"}</span><span className={`status-chip ${document.status}`}>{document.status === "indexed" ? "Indexé" : "Prêt"}</span></article>;
+                        return <article className="document-row" role="row" key={document.jobId}><span className="document-name"><b>{document.name}</b><small>{document.sourceRelativePath}</small>{document.textWarning && <small>{document.textWarning}</small>}</span><span><i className="category-chip">{document.category}</i></span><span>{document.documentDate ?? "—"}</span><span>{relations.length ? <span className="link-count">⌁ {relations.length}</span> : "—"}</span><span className={`status-chip ${document.status}`}>{document.status === "indexed_name" ? "Indexé · nom seul" : document.status === "indexed" ? "Indexé" : document.textWarning ? "Sans texte · à indexer" : "Prêt"}</span></article>;
                       })}
                     </div>
                     {filteredDocuments.length === 0 && <div className="no-results">Aucun document ne correspond à ces filtres.</div>}
@@ -1274,7 +1274,7 @@ function App() {
                   <section className="rag-panel" aria-labelledby="rag-title">
                     <div className="rag-heading">
                       <div><p className="success-label">Recherche intelligente</p><h3 id="rag-title">Interroger les documents</h3><p>L’index et les embeddings sont conservés localement sur le serveur.</p></div>
-                      {(rag.status === "idle" || (rag.status === "error" && !rag.result)) && <button className="primary-button" onClick={buildIndex}>Estimer l’indexation</button>}
+                      {!['estimating', 'estimate', 'indexing'].includes(rag.status) && <button className="primary-button" onClick={buildIndex}>{indexResult ? "Mettre à jour l’index" : "Estimer l’indexation"}</button>}
                     </div>
                     {rag.status === "estimating" && <div className="ocr-progress"><span className="mini-spinner" /> Estimation du volume…</div>}
                     {rag.status === "estimate" && (
@@ -1286,11 +1286,11 @@ function App() {
                         <button className="primary-button" onClick={confirmIndex}>Confirmer l’indexation</button>
                       </div>
                     )}
-                    {rag.status === "indexing" && <div className="ocr-progress"><span className="mini-spinner" /> Indexation persistante en arrière-plan · {rag.task.status === "queued" ? "en attente" : "embeddings en cours"}…</div>}
+                    {rag.status === "indexing" && <div className="ocr-progress"><span className="mini-spinner" /> Indexation persistante en arrière-plan · {rag.task.status === "queued" ? "en attente" : "récupération OCR et embeddings en cours"}…</div>}
                     {rag.status === "error" && <div className="ocr-result error-result"><p>{rag.message}</p>{rag.task && <button className="secondary-button" onClick={retryIndex}>Relancer l’indexation</button>}</div>}
                     {indexResult && (
                       <>
-                        <p className="index-summary">{indexResult.chunksIndexed} extraits prêts · {indexResult.documentsIndexed} document(s) indexé(s) · {indexResult.documentsReused} réutilisé(s)</p>
+                        <p className="index-summary">{indexResult.chunksIndexed} extraits prêts · {indexResult.documentsIndexed} document(s) indexé(s) · {indexResult.documentsReused} réutilisé(s) · {indexResult.documentsNameOnly ?? 0} indexé(s) par nom uniquement</p>
                         <form className="question-form" onSubmit={ask}>
                           <label htmlFor="document-question">Votre question</label>
                           <textarea id="document-question" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Exemple : quelle est la date de la dernière facture ?" minLength={3} maxLength={4000} required />

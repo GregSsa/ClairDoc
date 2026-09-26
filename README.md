@@ -111,3 +111,7 @@ Le mode « Copier » reste le comportement par défaut et préserve tous les ori
 Par défaut, utilisez `http://127.0.0.1:8787` lorsque les deux programmes fonctionnent dans la même instance WSL. Si le serveur fonctionne sur une autre machine, utilisez son adresse privée et configurez `CLAIRDOC_HOST=0.0.0.0` côté serveur. N'exposez pas directement l'API sur Internet.
 
 Avant la création des embeddings, l'application affiche une estimation indicative du nombre de tokens et du coût. L'utilisateur doit confirmer explicitement. Le serveur traite ensuite l'indexation dans une tâche persistante : fermer l'application Tauri n'annule donc pas le travail. Le bouton « Sauvegarder les métadonnées » archive projets, index, textes extraits, plans et historique des tâches sans dupliquer les PDF volumineux.
+
+Après un import, la section **Documents en échec** affiche les fichiers concernés.
+Cliquez sur un nom pour déplier le diagnostic serveur et l'identifiant du traitement.
+Corrigez la cause avant de relancer : le bouton de relance reprend les mêmes fichiers.

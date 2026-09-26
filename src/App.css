@@ -497,3 +497,9 @@ h1 { margin: 0; color: #132b26; font-size: clamp(34px, 5vw, 50px); line-height: 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+.import-errors { margin-top: 18px; text-align: left; }
+.import-errors details { margin: 10px 0; padding: 12px; border: 1px solid #b77932; border-radius: 12px; }
+.import-errors summary { cursor: pointer; font-weight: 600; overflow-wrap: anywhere; }
+.import-errors pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; font-size: 13px; color: inherit; }
+.import-errors small { overflow-wrap: anywhere; }

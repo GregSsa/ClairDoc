@@ -94,6 +94,18 @@ Ces variables sont lues par le backend Rust et ne portent pas le préfixe `VITE_
 
 La clé OpenAI ne doit pas être placée ici. `OPENAI_API_KEY` appartient exclusivement au fichier `.env` de ClairDoc Server.
 
+Dans les paramètres, **Calcul des embeddings** permet de choisir OpenAI ou un calcul
+local sur le serveur (FastEmbed, MiniLM multilingue, CPU). Le premier calcul local
+télécharge le modèle ; relancez ensuite l'indexation des projets pour changer leur index.
+Les réponses de l'assistant et les propositions de noms IA utilisent toujours OpenAI.
+
+Avant de préparer un classement, l'option **Autoriser l'IA à proposer de nouveaux noms**
+permet de suggérer des noms d'après le texte. Désactivée par défaut, elle conserve les
+noms existants sauf doublons. Les chemins restent modifiables avant validation.
+L'assistant peut consulter le texte OCR d'un PDF précis tel que `e001.pdf` ; pour le
+renommer directement en conversation, activez les actions d'écriture. Le serveur doit
+avoir accès au dossier source pour effectuer la modification.
+
 Le mode « Copier » reste le comportement par défaut et préserve tous les originaux. Le mode « Déplacer et nettoyer » nécessite une confirmation supplémentaire : il écrit et vérifie la nouvelle architecture, conserve une sauvegarde de sécurité dans `.clairdoc/originals`, puis retire les anciens fichiers de leur emplacement source. Les PDF classés sont les versions OCRisées produites par le serveur ; les autres formats restent dans leur format natif.
 
 Par défaut, utilisez `http://127.0.0.1:8787` lorsque les deux programmes fonctionnent dans la même instance WSL. Si le serveur fonctionne sur une autre machine, utilisez son adresse privée et configurez `CLAIRDOC_HOST=0.0.0.0` côté serveur. N'exposez pas directement l'API sur Internet.

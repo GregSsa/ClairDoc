@@ -45,6 +45,7 @@ struct RuntimeInfoResponse {
     version: String,
     llm_model: String,
     embedding_model: String,
+    embedding_provider: String,
     embedding_dimensions: u64,
     ocr_languages: String,
     data_dir: String,
@@ -618,6 +619,22 @@ async fn list_remote_projects(app: AppHandle) -> Result<Vec<ProjectResponse>, St
 }
 
 #[tauri::command]
+async fn update_runtime_embeddings(
+    app: AppHandle,
+    provider: String,
+) -> Result<RuntimeInfoResponse, String> {
+    let config = read_server_config(&app)?;
+    let response = api_client(Duration::from_secs(20))?
+        .patch(format!("{}/api/v1/runtime", config.server_url))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .json(&serde_json::json!({ "embedding_provider": provider }))
+        .send()
+        .await
+        .map_err(|error| format!("Changement d'embeddings impossible : {error}"))?;
+    parse_api_response(response).await
+}
+
+#[tauri::command]
 async fn submit_ocr_job(
     app: AppHandle,
     path: String,
@@ -992,14 +1009,16 @@ async fn send_conversation_message(
 async fn create_organization_plan(
     app: AppHandle,
     project_id: String,
+    rename_files: bool,
 ) -> Result<OrganizationPlan, String> {
     let config = read_server_config(&app)?;
-    let response = api_client(Duration::from_secs(60))?
+    let response = api_client(Duration::from_secs(7200))?
         .post(format!(
             "{}/api/v1/projects/{project_id}/organization/plan",
             config.server_url
         ))
         .header("X-ClairDoc-Key", &config.api_key)
+        .json(&serde_json::json!({ "rename_files": rename_files }))
         .send()
         .await
         .map_err(|error| format!("Préparation du classement impossible : {error}"))?;
@@ -1515,6 +1534,7 @@ pub fn run() {
             open_project_file,
             get_runtime_info,
             update_runtime_model,
+            update_runtime_embeddings,
             list_remote_projects,
             submit_ocr_job,
             get_ocr_job,

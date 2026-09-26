@@ -20,6 +20,7 @@ export type RuntimeInfo = {
   version: string;
   llmModel: string;
   embeddingModel: string;
+  embeddingProvider: "openai" | "local";
   embeddingDimensions: number;
   ocrLanguages: string;
   dataDir: string;
@@ -222,6 +223,10 @@ export function updateRuntimeModel(llmModel: string) {
   return invoke<RuntimeInfo>("update_runtime_model", { llmModel });
 }
 
+export function updateRuntimeEmbeddings(provider: string) {
+  return invoke<RuntimeInfo>("update_runtime_embeddings", { provider });
+}
+
 export function listRemoteProjects() {
   return invoke<RemoteProject[]>("list_remote_projects");
 }
@@ -320,8 +325,8 @@ export function sendConversationMessage(
   });
 }
 
-export function createOrganizationPlan(projectId: string) {
-  return invoke<OrganizationPlan>("create_organization_plan", { projectId });
+export function createOrganizationPlan(projectId: string, renameFiles = false) {
+  return invoke<OrganizationPlan>("create_organization_plan", { projectId, renameFiles });
 }
 
 export function applyOrganizationPlan(

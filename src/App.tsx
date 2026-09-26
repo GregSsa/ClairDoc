@@ -46,6 +46,7 @@ import {
   startIndexProject,
   updateRemoteProject,
   updateRuntimeModel,
+  updateRuntimeEmbeddings,
   undoOrganization,
 } from "./server";
 import "./App.css";
@@ -200,6 +201,7 @@ function App() {
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
   const [libraryRefresh, setLibraryRefresh] = useState(0);
   const [organizationMode, setOrganizationMode] = useState<"copy" | "move">("copy");
+  const [renameFiles, setRenameFiles] = useState(false);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [conversationLoading, setConversationLoading] = useState(false);
@@ -513,6 +515,14 @@ function App() {
     }
   }
 
+  async function selectEmbeddingProvider(provider: string) {
+    try {
+      setRuntimeInfo(await updateRuntimeEmbeddings(provider));
+    } catch (error) {
+      window.alert(errorMessage(error, "Impossible de changer les embeddings."));
+    }
+  }
+
   function toggleCategory(category: string) {
     setCollapsedCategories((current) => {
       const next = new Set(current);
@@ -740,7 +750,7 @@ function App() {
     if (project.status !== "ready") return;
     setOrganization({ status: "planning" });
     try {
-      const plan = await createOrganizationPlan(project.project.id);
+      const plan = await createOrganizationPlan(project.project.id, renameFiles);
       setSelectedPlanEntries(plan.entries.map((entry) => entry.job_id));
       setOrganization({ status: "ready", plan });
     } catch (error) {
@@ -1155,7 +1165,8 @@ function App() {
               <div className="settings-title"><span>✦</span><div><h2>Intelligence artificielle</h2><p>Modèles utilisés par le serveur pour ce poste.</p></div></div>
               <label className="model-picker">Modèle de réponse<select value={runtimeInfo?.llmModel ?? ""} disabled={!runtimeInfo} onChange={(event) => selectRuntimeModel(event.target.value)}>{runtimeInfo?.modelOptions.map((model) => <option key={model} value={model}>{model === "gpt-6-luna" ? "Luna · rapide et économique" : model === "gpt-5.6-terra" ? "Terra · équilibré" : "Sol · plus puissant"}</option>)}</select></label>
               <dl><div><dt>Modèle actif</dt><dd>{runtimeInfo?.llmModel ?? "—"}</dd></div><div><dt>Modèle d’embeddings</dt><dd>{runtimeInfo?.embeddingModel ?? "—"}</dd></div><div><dt>Dimensions</dt><dd>{runtimeInfo?.embeddingDimensions ?? "—"}</dd></div><div><dt>Clé OpenAI</dt><dd>{runtimeInfo?.openaiConfigured ? "Configurée" : "Non configurée"}</dd></div></dl>
-              <p className="settings-explanation">Les embeddings servent à retrouver les passages pertinents. Le modèle de réponse reçoit uniquement ces extraits, pas l’intégralité de vos dossiers.</p>
+              <label className="model-picker">Calcul des embeddings<select value={runtimeInfo?.embeddingProvider ?? "openai"} disabled={!runtimeInfo} onChange={(event) => selectEmbeddingProvider(event.target.value)}><option value="openai">API OpenAI</option><option value="local">Local sur le serveur · MiniLM multilingue</option></select></label>
+              <p className="settings-explanation">En local, aucun texte n’est envoyé à OpenAI pour les embeddings. Le modèle est téléchargé une fois, puis fonctionne sur CPU. Relancez l’indexation de chaque projet pour changer son index. Les réponses et le renommage IA utilisent toujours OpenAI ; leurs extraits sont transmis à l’API.</p>
             </article>
             <article className="settings-panel">
               <div className="settings-title"><span>◫</span><div><h2>Traitement local</h2><p>OCR, stockage et limites de sécurité.</p></div></div>
@@ -1268,10 +1279,10 @@ function App() {
                     {rag.status === "estimating" && <div className="ocr-progress"><span className="mini-spinner" /> Estimation du volume…</div>}
                     {rag.status === "estimate" && (
                       <div className="index-estimate">
-                        <strong>Estimation avant envoi</strong>
+                        <strong>Estimation avant calcul</strong>
                         <p>{formatNumber(rag.estimate.documentsToEmbed)} document(s) à encoder · {formatNumber(rag.estimate.documentsReused)} réutilisé(s)</p>
                         <p>Environ {formatNumber(rag.estimate.estimatedTokens)} tokens · coût estimé {new Intl.NumberFormat("fr-FR", { style: "currency", currency: "USD", minimumFractionDigits: 4 }).format(rag.estimate.estimatedCostUsd)}</p>
-                        <small>Estimation indicative avec {rag.estimate.embeddingModel}. Aucun embedding n’a encore été envoyé.</small>
+                        <small>Estimation indicative avec {rag.estimate.embeddingModel}. Aucun nouveau calcul n’a encore été lancé.</small>
                         <button className="primary-button" onClick={confirmIndex}>Confirmer l’indexation</button>
                       </div>
                     )}
@@ -1295,7 +1306,7 @@ function App() {
                         <ul>{rag.answer.citations.map((citation, index) => <li key={`${citation.job_id}-${citation.chunk_index}`}><b>[{index + 1}] {citation.document_name}{citation.page_number ? ` · page ${citation.page_number}` : ""}</b><span>{citation.excerpt}</span></li>)}</ul>
                       </div>
                     )}
-                    {indexResult && organization.status === "idle" && <button className="secondary-button organization-start" onClick={prepareOrganization}>Préparer le classement</button>}
+                    {indexResult && organization.status !== "applied" && <div className="organization-start"><label><input type="checkbox" checked={renameFiles} disabled={organization.status === "planning" || organization.status === "applying"} onChange={(event) => { setRenameFiles(event.target.checked); setOrganization({ status: "idle" }); }} /> Autoriser l’IA à proposer de nouveaux noms d’après le contenu</label><p>Sans cette option, les noms actuels sont conservés (sauf doublons). Les propositions sont modifiables avant validation. Le renommage IA utilise OpenAI.</p>{organization.status === "idle" && <button className="secondary-button" onClick={prepareOrganization}>Préparer le classement</button>}</div>}
                     {organization.status === "planning" && <div className="ocr-progress organization-start"><span className="mini-spinner" /> Analyse des catégories et des noms…</div>}
                     {organization.status === "error" && <div className="ocr-result error-result organization-start"><p>{organization.message}</p><button className="secondary-button" onClick={prepareOrganization}>Réessayer</button></div>}
                     {organizationPlan && (

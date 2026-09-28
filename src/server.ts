@@ -153,9 +153,13 @@ export type AskResult = {
 };
 
 export type AssistantAction = {
+  id?: string;
   tool: string;
-  status: "completed" | "failed" | "confirmation_required";
+  status: "completed" | "failed" | "confirmation_required" | "pending_local";
   summary: string;
+  arguments?: Record<string, string>;
+  sourceRelativePath?: string;
+  expectedSha256?: string;
 };
 
 export type ConversationSummary = {
@@ -329,6 +333,10 @@ export function sendConversationMessage(
     question,
     allowWriteActions,
   });
+}
+
+export function applyLocalAssistantAction(projectId: string, conversationId: string, actionId: string) {
+  return invoke<AssistantAction>("apply_local_assistant_action", { projectId, conversationId, actionId });
 }
 
 export function createOrganizationPlan(projectId: string, renameFiles = false) {

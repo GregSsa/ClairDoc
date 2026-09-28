@@ -231,11 +231,16 @@ struct AskResponse {
     actions: Vec<AssistantActionResponse>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 struct AssistantActionResponse {
+    id: Option<String>,
     tool: String,
     status: String,
     summary: String,
+    #[serde(default)]
+    arguments: serde_json::Value,
+    source_relative_path: Option<String>,
+    expected_sha256: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1027,6 +1032,207 @@ async fn send_conversation_message(
     parse_api_response(response).await
 }
 
+fn safe_local_parent(root: &Path, relative: &Path) -> Result<PathBuf, String> {
+    let parent = root
+        .join(relative)
+        .parent()
+        .ok_or("Dossier de destination invalide.")?
+        .to_path_buf();
+    let mut existing = parent.as_path();
+    while !existing.exists() {
+        existing = existing
+            .parent()
+            .ok_or("Dossier de destination invalide.")?;
+    }
+    let canonical = existing.canonicalize().map_err(|error| error.to_string())?;
+    if !canonical.starts_with(root) {
+        return Err("La destination sort du dossier du projet.".to_string());
+    }
+    fs::create_dir_all(&parent)
+        .map_err(|error| format!("Création du dossier impossible : {error}"))?;
+    let canonical = parent.canonicalize().map_err(|error| error.to_string())?;
+    if !canonical.starts_with(root) {
+        return Err("La destination sort du dossier du projet.".to_string());
+    }
+    Ok(canonical)
+}
+
+fn copy_without_replacing(source: &Path, destination: &Path) -> Result<(), String> {
+    let mut input = fs::File::open(source).map_err(|error| error.to_string())?;
+    let mut output = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(|error| format!("La destination existe déjà ou n'est pas accessible : {error}"))?;
+    if let Err(error) = std::io::copy(&mut input, &mut output) {
+        drop(output);
+        let _ = fs::remove_file(destination);
+        return Err(format!("Copie impossible : {error}"));
+    }
+    Ok(())
+}
+
+fn perform_local_file_action(
+    root_path: &str,
+    action: &AssistantActionResponse,
+) -> Result<(), String> {
+    if action.status != "pending_local" {
+        return Err("Cette action n'est plus en attente.".to_string());
+    }
+    let root = PathBuf::from(root_path)
+        .canonicalize()
+        .map_err(|_| "Le dossier source est inaccessible sur ce PC.".to_string())?;
+    let source_relative = safe_relative_path(
+        action
+            .source_relative_path
+            .as_deref()
+            .ok_or("Chemin source absent.")?,
+    )?;
+    if source_relative.starts_with(".clairdoc") {
+        return Err("Le dossier interne de ClairDoc est protégé.".to_string());
+    }
+    let expected = action
+        .expected_sha256
+        .as_deref()
+        .ok_or("Empreinte source absente.")?;
+    let source = root.join(&source_relative);
+    let destination_relative = match action.tool.as_str() {
+        "copy_document" | "move_document" => safe_relative_path(
+            action
+                .arguments
+                .get("destination")
+                .and_then(|value| value.as_str())
+                .ok_or("Destination absente.")?,
+        )?,
+        "rename_document" => {
+            let name = action
+                .arguments
+                .get("new_name")
+                .and_then(|value| value.as_str())
+                .ok_or("Nouveau nom absent.")?;
+            let part = safe_relative_path(name)?;
+            if part.components().count() != 1 || Path::new(name).extension() != source.extension() {
+                return Err("Le nom doit conserver le dossier et l'extension.".to_string());
+            }
+            source_relative.parent().unwrap_or(Path::new("")).join(part)
+        }
+        "delete_document" => {
+            let id = action.id.as_deref().ok_or("Identifiant d'action absent.")?;
+            if safe_relative_path(id)?.components().count() != 1 {
+                return Err("Identifiant d'action invalide.".to_string());
+            }
+            PathBuf::from(".clairdoc/trash").join(format!(
+                "{id}-{}",
+                source
+                    .file_name()
+                    .ok_or("Nom source invalide.")?
+                    .to_string_lossy()
+            ))
+        }
+        _ => return Err("Action locale non prise en charge.".to_string()),
+    };
+    if destination_relative == source_relative
+        || (action.tool != "delete_document" && destination_relative.starts_with(".clairdoc"))
+    {
+        return Err("Destination invalide ou réservée à ClairDoc.".to_string());
+    }
+    let destination = root.join(&destination_relative);
+    if source.exists() {
+        let canonical = source.canonicalize().map_err(|error| error.to_string())?;
+        if !canonical.starts_with(&root)
+            || !canonical.is_file()
+            || sha256_file(&canonical)? != expected
+        {
+            return Err("Le fichier source a changé depuis l'import. Action annulée.".to_string());
+        }
+        safe_local_parent(&root, &destination_relative)?;
+        if destination.exists() {
+            if action.tool == "copy_document"
+                && destination.is_file()
+                && sha256_file(&destination)? == expected
+            {
+                return Ok(());
+            }
+            return Err("La destination existe déjà. Aucun fichier n'a été remplacé.".to_string());
+        }
+        if action.tool == "copy_document" {
+            copy_without_replacing(&canonical, &destination)?;
+            if sha256_file(&destination)? != expected {
+                let _ = fs::remove_file(&destination);
+                return Err("Le fichier a changé pendant la copie ; action annulée.".to_string());
+            }
+        } else {
+            // Créer la destination sans remplacement atomique, puis retirer la source.
+            if fs::hard_link(&canonical, &destination).is_err() {
+                copy_without_replacing(&canonical, &destination)?;
+            }
+            if sha256_file(&destination)? != expected {
+                let _ = fs::remove_file(&destination);
+                return Err(
+                    "Le fichier a changé pendant le déplacement ; action annulée.".to_string(),
+                );
+            }
+            fs::remove_file(&canonical).map_err(|error| {
+                format!("Destination créée mais suppression de la source impossible : {error}")
+            })?;
+        }
+        return Ok(());
+    }
+    // Reprise après une coupure entre l'opération locale et sa confirmation par le serveur.
+    if destination.is_file()
+        && destination
+            .canonicalize()
+            .map_err(|error| error.to_string())?
+            .starts_with(&root)
+        && sha256_file(&destination)? == expected
+    {
+        return Ok(());
+    }
+    Err("Le fichier source est introuvable ; l'action n'a pas été confirmée.".to_string())
+}
+
+#[tauri::command]
+async fn apply_local_assistant_action(
+    app: AppHandle,
+    project_id: String,
+    conversation_id: String,
+    action_id: String,
+) -> Result<AssistantActionResponse, String> {
+    let config = read_server_config(&app)?;
+    let client = api_client(Duration::from_secs(60))?;
+    let response = client
+        .get(format!(
+            "{}/api/v1/projects/{project_id}",
+            config.server_url
+        ))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .send()
+        .await
+        .map_err(|error| format!("Projet inaccessible : {error}"))?;
+    let project: ProjectResponse = parse_api_response(response).await?;
+    let root = project
+        .source_root
+        .ok_or("Ce projet n'a pas de dossier local.")?;
+    let conversation =
+        get_conversation(app.clone(), project_id.clone(), conversation_id.clone()).await?;
+    let action = conversation
+        .messages
+        .iter()
+        .flat_map(|message| &message.actions)
+        .find(|action| action.id.as_deref() == Some(action_id.as_str()))
+        .cloned()
+        .ok_or("Action introuvable dans cette conversation.")?;
+    tauri::async_runtime::spawn_blocking(move || perform_local_file_action(&root, &action))
+        .await
+        .map_err(|error| format!("Action locale interrompue : {error}"))??;
+    let response = client.post(format!(
+        "{}/api/v1/projects/{project_id}/conversations/{conversation_id}/local-actions/{action_id}/complete",
+        config.server_url
+    )).header("X-ClairDoc-Key", &config.api_key).send().await
+        .map_err(|error| format!("Fichier modifié, mais confirmation serveur impossible : {error}. Réessayez cette action."))?;
+    parse_api_response(response).await
+}
+
 #[tauri::command]
 async fn create_organization_plan(
     app: AppHandle,
@@ -1505,6 +1711,9 @@ fn list_document_files(path: String) -> Result<Vec<DocumentFile>, String> {
                 continue;
             }
             if file_type.is_dir() {
+                if entry.file_name() == ".clairdoc" {
+                    continue;
+                }
                 pending.push(entry.path());
                 continue;
             }
@@ -1579,6 +1788,7 @@ pub fn run() {
             get_conversation,
             delete_conversation,
             send_conversation_message,
+            apply_local_assistant_action,
             list_document_files,
             create_organization_plan,
             apply_organization_plan,
@@ -1591,6 +1801,112 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn local_action(
+        tool: &str,
+        source: &str,
+        arguments: serde_json::Value,
+        hash: String,
+    ) -> AssistantActionResponse {
+        AssistantActionResponse {
+            id: Some("action-1".to_string()),
+            tool: tool.to_string(),
+            status: "pending_local".to_string(),
+            summary: "test".to_string(),
+            arguments,
+            source_relative_path: Some(source.to_string()),
+            expected_sha256: Some(hash),
+        }
+    }
+
+    #[test]
+    fn local_assistant_rename_requires_hash_and_never_overwrites() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("clairdoc-local-action-{unique}"));
+        fs::create_dir_all(&root).expect("root");
+        let source = root.join("scan.txt");
+        fs::write(&source, b"original").expect("source");
+        let action = local_action(
+            "rename_document",
+            "scan.txt",
+            serde_json::json!({"new_name":"memo.txt"}),
+            sha256_file(&source).expect("hash"),
+        );
+        fs::write(root.join("memo.txt"), b"existing").expect("destination");
+        assert!(perform_local_file_action(root.to_str().expect("path"), &action).is_err());
+        assert_eq!(
+            fs::read(root.join("memo.txt")).expect("unchanged"),
+            b"existing"
+        );
+        fs::remove_file(root.join("memo.txt")).expect("clear destination");
+        fs::write(&source, b"changed").expect("changed source");
+        assert!(perform_local_file_action(root.to_str().expect("path"), &action).is_err());
+        fs::write(&source, b"original").expect("restore source");
+        perform_local_file_action(root.to_str().expect("path"), &action).expect("rename");
+        assert!(!source.exists());
+        assert_eq!(
+            fs::read(root.join("memo.txt")).expect("renamed"),
+            b"original"
+        );
+        perform_local_file_action(root.to_str().expect("path"), &action)
+            .expect("retry after interruption");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_assistant_rejects_parent_traversal() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("clairdoc-local-path-{unique}"));
+        fs::create_dir_all(&root).expect("root");
+        let source = root.join("scan.txt");
+        fs::write(&source, b"original").expect("source");
+        let action = local_action(
+            "move_document",
+            "scan.txt",
+            serde_json::json!({"destination":"../outside.txt"}),
+            sha256_file(&source).expect("hash"),
+        );
+        assert!(perform_local_file_action(root.to_str().expect("path"), &action).is_err());
+        assert!(source.is_file());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_assistant_copy_keeps_original_and_skips_internal_trash_on_import() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("clairdoc-local-copy-{unique}"));
+        fs::create_dir_all(root.join(".clairdoc/trash")).expect("trash");
+        fs::write(root.join(".clairdoc/trash/old.txt"), b"deleted").expect("trash file");
+        fs::write(root.join("scan.txt"), b"original").expect("source");
+        let hash = sha256_file(&root.join("scan.txt")).expect("hash");
+        let action = local_action(
+            "copy_document",
+            "scan.txt",
+            serde_json::json!({"destination":"copies/scan.txt"}),
+            hash,
+        );
+        perform_local_file_action(root.to_str().expect("path"), &action).expect("copy");
+        assert_eq!(
+            fs::read(root.join("scan.txt")).expect("original"),
+            b"original"
+        );
+        assert_eq!(
+            fs::read(root.join("copies/scan.txt")).expect("copy"),
+            b"original"
+        );
+        let listed = list_document_files(root.display().to_string()).expect("list");
+        assert_eq!(listed.len(), 2);
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn organization_copy_keeps_source_and_can_be_undone() {

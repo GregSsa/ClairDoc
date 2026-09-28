@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  applyLocalAssistantAction,
   applyOrganizationPlan,
   createConversation,
   createOrganizationPlan,
@@ -207,6 +208,7 @@ function App() {
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [conversationLoading, setConversationLoading] = useState(false);
   const [assistantSending, setAssistantSending] = useState(false);
+  const [applyingLocalAction, setApplyingLocalAction] = useState<string | null>(null);
   const [assistantError, setAssistantError] = useState("");
   const [allowAssistantActions, setAllowAssistantActions] = useState(false);
   const [sourceAccess, setSourceAccess] = useState<{ accessible: boolean; reason: string } | null>(null);
@@ -943,6 +945,23 @@ function App() {
     }
   }
 
+  async function confirmLocalAction(actionId: string, summary: string) {
+    if (project.status !== "ready" || !activeConversation || applyingLocalAction) return;
+    if (!window.confirm(`${summary}\n\nConfirmer cette modification du dossier sur ce PC ? Aucun fichier existant ne sera remplacé. Une suppression place le document dans la corbeille ClairDoc du projet.`)) return;
+    setApplyingLocalAction(actionId);
+    setAssistantError("");
+    try {
+      await applyLocalAssistantAction(project.project.id, activeConversation.id, actionId);
+      setActiveConversation(await getConversation(project.project.id, activeConversation.id));
+      setConversations(await listConversations(project.project.id));
+      setLibraryRefresh((value) => value + 1);
+    } catch (error) {
+      setAssistantError(errorMessage(error, "La modification locale n’a pas pu être appliquée."));
+    } finally {
+      setApplyingLocalAction(null);
+    }
+  }
+
   const indexResult = "result" in rag ? rag.result : undefined;
   const organizationPlan = "plan" in organization ? organization.plan : undefined;
   const completedJobs = projectJobs.filter((job) => job.status === "completed");
@@ -1131,7 +1150,7 @@ function App() {
                 </aside>
                 <div className="chat-card">
                   <div className="chat-intro"><span>✦</span><div><strong>Assistant de {project.project.name}</strong><p>Demandez une date, un montant, un organisme ou une synthèse.</p></div></div>
-                  {sourceAccess && <div className={sourceAccess.accessible ? "source-access-note" : "source-access-note warning"}><strong>{sourceAccess.accessible ? "Dossier modifiable après autorisation" : "Modifications de fichiers indisponibles depuis le serveur"}</strong><p>{sourceAccess.reason} L’assistant peut toujours consulter les documents importés et gérer les métadonnées du projet.</p></div>}
+                  {project.project.sourceRoot && <div className="source-access-note"><strong>Modifications locales après validation</strong><p>L’assistant peut proposer de copier, déplacer, renommer ou mettre à la corbeille un document. Chaque action devra être confirmée ici avant de toucher au dossier de ce PC.{sourceAccess && !sourceAccess.accessible ? " Le serveur utilise les copies importées pour consulter les documents." : ""}</p></div>}
                   {!indexResult && rag.status === "idle" && <div className="index-callout"><div><strong>Préparer la recherche intelligente</strong><p>ClairDoc doit créer l’index sémantique de ce projet avant la première question.</p></div><button className="primary-button" onClick={buildIndex}>Estimer l’indexation</button></div>}
                   {rag.status === "estimating" && <div className="ocr-progress"><span className="mini-spinner" /> Estimation en cours…</div>}
                   {rag.status === "estimate" && <div className="index-estimate"><strong>{formatNumber(rag.estimate.estimatedTokens)} tokens estimés</strong><p>{rag.estimate.documentsToEmbed} document(s) à encoder · coût approximatif {new Intl.NumberFormat("fr-FR", { style: "currency", currency: "USD", minimumFractionDigits: 4 }).format(rag.estimate.estimatedCostUsd)}</p><button className="primary-button" onClick={confirmIndex}>Confirmer</button></div>}
@@ -1141,12 +1160,12 @@ function App() {
                   <div className="conversation">
                     {activeConversation?.messages.map((message) => message.role === "user"
                       ? <div className="user-message" key={message.id}>{message.content}</div>
-                      : <div className="assistant-message" key={message.id}><span>✦</span><div><p>{message.content}</p>{message.actions.length > 0 && <div className="action-list">{message.actions.map((action, index) => <span className={action.status} key={`${message.id}-${index}`}>{action.summary}</span>)}</div>}<div className="source-list">{message.citations.map((citation, index) => <button type="button" key={`${citation.job_id}-${citation.chunk_index}`}><b>[{index + 1}] {citation.document_name}</b><small>{citation.page_number ? `Page ${citation.page_number} · ` : ""}{citation.excerpt}</small></button>)}</div></div></div>)}
+                      : <div className="assistant-message" key={message.id}><span>✦</span><div><p>{message.content}</p>{message.actions.length > 0 && <div className="action-list">{message.actions.map((action, index) => <span className={action.status} key={`${message.id}-${index}`}>{action.summary}{action.status === "pending_local" && action.id && <button type="button" disabled={!!applyingLocalAction} onClick={() => void confirmLocalAction(action.id!, action.summary)}>{applyingLocalAction === action.id ? "Application…" : "Vérifier et confirmer"}</button>}</span>)}</div>}<div className="source-list">{message.citations.map((citation, index) => <button type="button" key={`${citation.job_id}-${citation.chunk_index}`}><b>[{index + 1}] {citation.document_name}</b><small>{citation.page_number ? `Page ${citation.page_number} · ` : ""}{citation.excerpt}</small></button>)}</div></div></div>)}
                     {!conversationLoading && activeConversation?.messages.length === 0 && <p className="empty-hint">Cette conversation est vide. Demandez une recherche, une synthèse ou une action sur le projet.</p>}
                   </div>
                   {assistantError && <div className="error-result"><p>{assistantError}</p></div>}
                   <form className="chat-composer" onSubmit={ask}>
-                    <label className="assistant-permission"><input type="checkbox" checked={allowAssistantActions} onChange={(event) => setAllowAssistantActions(event.target.checked)} /><span>Autoriser les modifications pour ce message{sourceAccess && !sourceAccess.accessible ? " (métadonnées seulement si le serveur ne voit pas le dossier)" : ""}</span></label>
+                    <label className="assistant-permission"><input type="checkbox" checked={allowAssistantActions} onChange={(event) => setAllowAssistantActions(event.target.checked)} /><span>Autoriser les changements de catégories, liens et mémoire pour ce message. Les fichiers demanderont une confirmation séparée.</span></label>
                     <textarea value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Posez une question ou demandez une action…" minLength={3} maxLength={4000} required />
                     <button className="primary-button" disabled={assistantSending || conversationLoading}>{assistantSending ? "…" : "Envoyer"}</button>
                   </form>

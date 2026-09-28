@@ -95,7 +95,7 @@ Ces variables sont lues par le backend Rust et ne portent pas le préfixe `VITE_
 
 La clé OpenAI ne doit pas être placée ici. `OPENAI_API_KEY` appartient exclusivement au fichier `.env` de ClairDoc Server.
 
-L'import lit le dossier choisi et envoie les documents pris en charge au serveur pour leur traitement ; il ne déplace pas les originaux. Les conversations et les modifications de catégories ou de liens fonctionnent ensuite sur les copies et métadonnées du projet. Pour que l'assistant déplace, renomme ou supprime un fichier original, le même dossier doit aussi être visible sur le PC serveur au même chemin. L'application affiche cet état dans la conversation et exige une autorisation avant une modification. Un dossier seulement présent sur le PC utilisateur ne peut pas encore être modifié par l'assistant à distance.
+L'import lit le dossier choisi et envoie les documents pris en charge au serveur pour leur traitement ; il ne déplace pas les originaux. Les conversations et les modifications de catégories ou de liens fonctionnent ensuite sur les copies et métadonnées du projet. L'assistant peut proposer une copie, un déplacement, un renommage ou une mise à la corbeille d'un original : chaque proposition est confirmée séparément dans l'application, qui agit sur le dossier local après vérification de l'empreinte du fichier. Le serveur n'a pas besoin de voir ce dossier pour ces actions. Les fichiers existants ne sont pas remplacés ; les suppressions vont dans `.clairdoc/trash` du projet.
 
 Dans les paramètres, **Calcul des embeddings** permet de choisir OpenAI ou un calcul
 local sur le serveur (FastEmbed, MiniLM multilingue, CPU). Le premier calcul local

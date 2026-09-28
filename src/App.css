@@ -154,6 +154,10 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px
 .action-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
 .action-list span { padding: 5px 8px; border-radius: 8px; color: #315d51; background: #e9f5f1; font-size: 12px; }
 .action-list .failed, .action-list .confirmation_required { color: #874444; background: #fae9e9; }
+.action-list .pending_local { color: #72511e; background: #fff2d6; }
+.action-list .pending_local button { display: block; margin-top: 6px; padding: 5px 8px; border: 1px solid currentColor; border-radius: 6px; color: inherit; background: transparent; cursor: pointer; }
+.action-list .pending_local button:disabled { opacity: .55; cursor: wait; }
+[data-theme="dark"] .action-list .pending_local { color: #f3cf8d; background: #3a2d1b; }
 .chat-composer textarea { min-height: 54px; max-height: 150px; padding: 14px; resize: vertical; border: 1px solid #cedad6; border-radius: 13px; }
 .chat-composer .primary-button { min-width: 96px; }
 .topbar-actions { display: flex; align-items: center; gap: 14px; }

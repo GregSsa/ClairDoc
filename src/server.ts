@@ -123,6 +123,30 @@ export type DocumentLibrary = {
   relationships: DocumentRelationship[];
 };
 
+export type SearchPassage = {
+  text: string;
+  pageNumber: number | null;
+  chunkIndex: number;
+  score: number;
+};
+
+export type SearchDocument = {
+  jobId: string;
+  documentName: string;
+  sourceRelativePath: string;
+  category: string;
+  indexingMode: "content" | "name_only";
+  score: number;
+  passages: SearchPassage[];
+};
+
+export type DocumentSearchResult = {
+  query: string;
+  mode: "local" | "ai";
+  results: SearchDocument[];
+  model: string | null;
+};
+
 export type Citation = {
   document_name: string;
   job_id: string;
@@ -345,6 +369,10 @@ export function createServerBackup() {
 
 export function listProjectDocuments(projectId: string) {
   return invoke<DocumentLibrary>("list_project_documents", { projectId });
+}
+
+export function searchProjectDocuments(projectId: string, query: string, mode: "local" | "ai", limit: number) {
+  return invoke<DocumentSearchResult>("search_project_documents", { projectId, query, mode, limit });
 }
 
 export function askProject(projectId: string, question: string) {

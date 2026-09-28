@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import ProjectExplorer from "./ProjectExplorer";
+import DocumentSearch from "./DocumentSearch";
 import {
   applyLocalAssistantAction,
   applyOrganizationPlan,
@@ -111,7 +112,7 @@ type BackupState =
   | { status: "saved"; path: string; size: number }
   | { status: "error"; message: string };
 
-type WorkspaceView = "home" | "library" | "relations" | "assistant" | "import" | "settings";
+type WorkspaceView = "home" | "library" | "search" | "relations" | "assistant" | "import" | "settings";
 
 type LibraryState =
   | { status: "idle" }
@@ -1107,6 +1108,7 @@ function App() {
           {([
             ["home", "⌂", "Projets"],
             ["library", "▤", "Documents"],
+            ["search", "⌕", "Recherche"],
             ["relations", "▣", "Explorateur"],
             ["assistant", "✦", "Assistant"],
             ["import", "+", "Ajouter"],
@@ -1179,6 +1181,10 @@ function App() {
             )}
           </section>
         )}
+
+        {activeView === "search" && (project.status === "ready"
+          ? <DocumentSearch key={project.project.id} project={project.project} runtimeInfo={runtimeInfo} />
+          : <div className="blank-panel"><h2>Sélectionnez un projet</h2><p>Ouvrez un projet depuis l’accueil pour rechercher ses documents.</p><button className="secondary-button" onClick={() => setActiveView("home")}>Voir mes projets</button></div>)}
 
         {activeView === "relations" && (
           <section className="relations-view">

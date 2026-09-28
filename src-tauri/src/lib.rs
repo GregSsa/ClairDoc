@@ -232,6 +232,36 @@ struct DocumentLibraryResponse {
 }
 
 #[derive(Deserialize, Serialize)]
+#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+struct SearchPassageResponse {
+    text: String,
+    page_number: Option<u64>,
+    chunk_index: u64,
+    score: f64,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+struct SearchDocumentResponse {
+    job_id: String,
+    document_name: String,
+    source_relative_path: String,
+    category: String,
+    indexing_mode: String,
+    score: f64,
+    passages: Vec<SearchPassageResponse>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+struct DocumentSearchResponse {
+    query: String,
+    mode: String,
+    results: Vec<SearchDocumentResponse>,
+    model: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
 struct CitationResponse {
     document_name: String,
     job_id: String,
@@ -1047,6 +1077,28 @@ async fn list_project_documents(
         .send()
         .await
         .map_err(|error| format!("Chargement de la bibliothèque impossible : {error}"))?;
+    parse_api_response(response).await
+}
+
+#[tauri::command]
+async fn search_project_documents(
+    app: AppHandle,
+    project_id: String,
+    query: String,
+    mode: String,
+    limit: u8,
+) -> Result<DocumentSearchResponse, String> {
+    let config = read_server_config(&app)?;
+    let response = api_client(Duration::from_secs(180))?
+        .post(format!(
+            "{}/api/v1/projects/{project_id}/search",
+            config.server_url
+        ))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .json(&serde_json::json!({ "query": query, "mode": mode, "limit": limit }))
+        .send()
+        .await
+        .map_err(|error| format!("Recherche impossible : {error}"))?;
     parse_api_response(response).await
 }
 
@@ -1968,6 +2020,7 @@ pub fn run() {
             retry_index_task,
             create_server_backup,
             list_project_documents,
+            search_project_documents,
             ask_project,
             list_conversations,
             create_conversation,

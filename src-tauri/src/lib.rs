@@ -595,12 +595,20 @@ async fn get_runtime_info(app: AppHandle) -> Result<RuntimeInfoResponse, String>
 }
 
 #[tauri::command]
-async fn get_project_source_access(app: AppHandle, project_id: String) -> Result<serde_json::Value, String> {
+async fn get_project_source_access(
+    app: AppHandle,
+    project_id: String,
+) -> Result<serde_json::Value, String> {
     let config = read_server_config(&app)?;
     let response = api_client(Duration::from_secs(30))?
-        .get(format!("{}/api/v1/projects/{project_id}/source-access", config.server_url))
+        .get(format!(
+            "{}/api/v1/projects/{project_id}/source-access",
+            config.server_url
+        ))
         .header("X-ClairDoc-Key", &config.api_key)
-        .send().await.map_err(|error| format!("Vérification du dossier impossible : {error}"))?;
+        .send()
+        .await
+        .map_err(|error| format!("Vérification du dossier impossible : {error}"))?;
     parse_api_response(response).await
 }
 

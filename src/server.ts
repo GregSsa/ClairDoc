@@ -46,6 +46,20 @@ export type DocumentFile = {
   bytes: number;
 };
 
+export type ProjectDirectoryEntry = {
+  name: string;
+  relativePath: string;
+  kind: "directory" | "file";
+  bytes: number;
+};
+
+export type ProjectDirectoryPage = {
+  entries: ProjectDirectoryEntry[];
+  total: number;
+  offset: number;
+  limit: number;
+};
+
 export type IndexResult = {
   projectId: string;
   documentsIndexed: number;
@@ -223,6 +237,22 @@ export function getProjectSourceAccess(projectId: string) {
 
 export function openProjectFile(rootPath: string, relativePath: string) {
   return invoke<void>("open_project_file", { rootPath, relativePath });
+}
+
+export function listProjectDirectory(rootPath: string, relativePath: string, offset: number, limit = 100) {
+  return invoke<ProjectDirectoryPage>("list_project_directory", { rootPath, relativePath, offset, limit });
+}
+
+export function createProjectDirectory(rootPath: string, relativePath: string, name: string) {
+  return invoke<void>("create_project_directory", { rootPath, relativePath, name });
+}
+
+export function removeEmptyProjectDirectory(rootPath: string, relativePath: string) {
+  return invoke<void>("remove_empty_project_directory", { rootPath, relativePath });
+}
+
+export function openProjectDirectory(rootPath: string, relativePath: string) {
+  return invoke<void>("open_project_directory", { rootPath, relativePath });
 }
 
 export function getRuntimeInfo() {

@@ -71,6 +71,24 @@ struct DocumentFile {
     bytes: u64,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectDirectoryEntry {
+    name: String,
+    relative_path: String,
+    kind: String,
+    bytes: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectDirectoryPage {
+    entries: Vec<ProjectDirectoryEntry>,
+    total: usize,
+    offset: usize,
+    limit: usize,
+}
+
 #[derive(Deserialize, Serialize, Clone)]
 struct OrganizationEntry {
     job_id: String,
@@ -585,6 +603,134 @@ fn open_project_file(root_path: String, relative_path: String) -> Result<(), Str
     }
     #[allow(unreachable_code)]
     Err("L’ouverture du document est disponible sous Linux.".to_string())
+}
+
+fn project_directory(root_path: &str, relative_path: &str) -> Result<(PathBuf, PathBuf), String> {
+    let root = PathBuf::from(root_path)
+        .canonicalize()
+        .map_err(|_| "Le dossier source est inaccessible sur ce PC.".to_string())?;
+    if !root.is_dir() {
+        return Err("Le dossier source du projet est invalide.".to_string());
+    }
+    let relative = safe_relative_path(relative_path)?;
+    if relative.starts_with(".clairdoc") {
+        return Err("Le dossier interne de ClairDoc est protégé.".to_string());
+    }
+    let mut checked = root.clone();
+    for component in relative.components() {
+        checked.push(component);
+        if fs::symlink_metadata(&checked)
+            .map_err(|_| "Le dossier demandé est inaccessible.".to_string())?
+            .file_type()
+            .is_symlink()
+        {
+            return Err("Les liens symboliques ne sont pas explorés par ClairDoc.".to_string());
+        }
+    }
+    let directory = root
+        .join(relative)
+        .canonicalize()
+        .map_err(|_| "Le dossier demandé est inaccessible.".to_string())?;
+    if !directory.starts_with(&root) || !directory.is_dir() {
+        return Err("Le dossier demandé sort du projet.".to_string());
+    }
+    Ok((root, directory))
+}
+
+#[tauri::command]
+fn list_project_directory(
+    root_path: String,
+    relative_path: String,
+    offset: usize,
+    limit: usize,
+) -> Result<ProjectDirectoryPage, String> {
+    let (root, directory) = project_directory(&root_path, &relative_path)?;
+    let mut entries = Vec::new();
+    for item in fs::read_dir(&directory)
+        .map_err(|error| format!("Lecture du dossier impossible : {error}"))?
+    {
+        let item = item.map_err(|error| format!("Lecture du dossier impossible : {error}"))?;
+        let file_type = item.file_type().map_err(|error| error.to_string())?;
+        if file_type.is_symlink()
+            || (!file_type.is_dir() && !file_type.is_file())
+            || item.file_name() == ".clairdoc"
+        {
+            continue;
+        }
+        let path = item.path();
+        let relative = path
+            .strip_prefix(&root)
+            .map_err(|_| "Chemin invalide dans le projet.")?;
+        entries.push(ProjectDirectoryEntry {
+            name: item.file_name().to_string_lossy().into_owned(),
+            relative_path: relative.to_string_lossy().replace('\\', "/"),
+            kind: if file_type.is_dir() {
+                "directory"
+            } else {
+                "file"
+            }
+            .to_string(),
+            bytes: if file_type.is_file() {
+                item.metadata().map(|value| value.len()).unwrap_or(0)
+            } else {
+                0
+            },
+        });
+    }
+    entries.sort_by(|left, right| {
+        (left.kind != "directory")
+            .cmp(&(right.kind != "directory"))
+            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    let total = entries.len();
+    let limit = limit.clamp(1, 200);
+    let entries = entries.into_iter().skip(offset).take(limit).collect();
+    Ok(ProjectDirectoryPage {
+        entries,
+        total,
+        offset,
+        limit,
+    })
+}
+
+#[tauri::command]
+fn create_project_directory(
+    root_path: String,
+    relative_path: String,
+    name: String,
+) -> Result<(), String> {
+    let (_, parent) = project_directory(&root_path, &relative_path)?;
+    let part = safe_relative_path(name.trim())?;
+    if part.components().count() != 1 || part == Path::new(".clairdoc") {
+        return Err("Indiquez un nom de dossier simple et valide.".to_string());
+    }
+    fs::create_dir(parent.join(part))
+        .map_err(|error| format!("Création du dossier impossible : {error}"))
+}
+
+#[tauri::command]
+fn remove_empty_project_directory(root_path: String, relative_path: String) -> Result<(), String> {
+    if relative_path.is_empty() {
+        return Err("Le dossier racine du projet ne peut pas être supprimé.".to_string());
+    }
+    let (root, directory) = project_directory(&root_path, &relative_path)?;
+    if directory == root {
+        return Err("Le dossier racine du projet ne peut pas être supprimé.".to_string());
+    }
+    fs::remove_dir(directory)
+        .map_err(|_| "Ce dossier n'est pas vide ou ne peut pas être supprimé.".to_string())
+}
+
+#[tauri::command]
+fn open_project_directory(root_path: String, relative_path: String) -> Result<(), String> {
+    let (_, directory) = project_directory(&root_path, &relative_path)?;
+    #[cfg(target_os = "linux")]
+    {
+        return open_linux_path(&directory);
+    }
+    #[allow(unreachable_code)]
+    Err("L'ouverture du dossier est disponible sous Linux.".to_string())
 }
 
 #[tauri::command]
@@ -1763,6 +1909,10 @@ pub fn run() {
             delete_remote_project,
             open_project_folder,
             open_project_file,
+            list_project_directory,
+            create_project_directory,
+            remove_empty_project_directory,
+            open_project_directory,
             get_runtime_info,
             get_project_source_access,
             update_runtime_model,
@@ -1801,6 +1951,71 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_explorer_pages_entries_and_protects_folders() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("clairdoc-explorer-{unique}"));
+        fs::create_dir_all(root.join("a/b/c/d")).expect("nested directory");
+        fs::create_dir_all(root.join(".clairdoc/trash")).expect("internal directory");
+        fs::write(root.join("note.txt"), b"note").expect("document");
+        let first = list_project_directory(root.display().to_string(), "".to_string(), 0, 1)
+            .expect("first page");
+        assert_eq!(first.total, 2);
+        assert_eq!(first.entries[0].name, "a");
+        let second = list_project_directory(root.display().to_string(), "".to_string(), 1, 1)
+            .expect("second page");
+        assert_eq!(second.entries[0].name, "note.txt");
+        create_project_directory(
+            root.display().to_string(),
+            "a/b/c/d".to_string(),
+            "new".to_string(),
+        )
+        .expect("create nested");
+        assert!(root.join("a/b/c/d/new").is_dir());
+        assert!(
+            remove_empty_project_directory(root.display().to_string(), "a".to_string()).is_err()
+        );
+        remove_empty_project_directory(root.display().to_string(), "a/b/c/d/new".to_string())
+            .expect("remove empty");
+        assert!(project_directory(root.to_str().expect("path"), "../outside").is_err());
+        assert!(project_directory(root.to_str().expect("path"), ".clairdoc/trash").is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&root, root.join("shortcut")).expect("symlink");
+            assert!(project_directory(root.to_str().expect("path"), "shortcut").is_err());
+            assert!(remove_empty_project_directory(
+                root.display().to_string(),
+                "shortcut".to_string()
+            )
+            .is_err());
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_explorer_handles_many_entries_without_returning_all_at_once() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("clairdoc-explorer-many-{unique}"));
+        fs::create_dir_all(&root).expect("root");
+        for number in 0..205 {
+            fs::write(root.join(format!("file-{number:03}.txt")), b"x").expect("file");
+        }
+        let first = list_project_directory(root.display().to_string(), "".to_string(), 0, 100)
+            .expect("first page");
+        let last = list_project_directory(root.display().to_string(), "".to_string(), 200, 100)
+            .expect("last page");
+        assert_eq!(first.total, 205);
+        assert_eq!(first.entries.len(), 100);
+        assert_eq!(last.entries.len(), 5);
+        let _ = fs::remove_dir_all(root);
+    }
 
     fn local_action(
         tool: &str,

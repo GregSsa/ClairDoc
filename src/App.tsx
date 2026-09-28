@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import ProjectExplorer from "./ProjectExplorer";
 import {
   applyLocalAssistantAction,
   applyOrganizationPlan,
@@ -198,6 +199,7 @@ function App() {
   const [projectMenu, setProjectMenu] = useState<string | null>(null);
   const [runtimeInfo, setRuntimeInfo] = useState<RuntimeInfo | null>(null);
   const [relationSearch, setRelationSearch] = useState("");
+  const [relationView, setRelationView] = useState<"folders" | "links">("folders");
   const [relationKind, setRelationKind] = useState("Tous");
   const [focusDocument, setFocusDocument] = useState("Tous");
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
@@ -1035,7 +1037,7 @@ function App() {
           {([
             ["home", "⌂", "Projets"],
             ["library", "▤", "Documents"],
-            ["relations", "⌘", "Relations"],
+            ["relations", "▣", "Explorateur"],
             ["assistant", "✦", "Assistant"],
             ["import", "+", "Ajouter"],
           ] as const).map(([view, icon, label]) => (
@@ -1110,9 +1112,11 @@ function App() {
 
         {activeView === "relations" && (
           <section className="relations-view">
-            <div className="page-heading compact"><div><p className="eyebrow">Cartographie</p><h1>Arbre du projet</h1><p>Explorez les catégories et limitez l’arbre aux documents reliés à une recherche ou à un document précis.</p></div>{project.status === "ready" && <button className="secondary-button" onClick={() => setLibraryRefresh((value) => value + 1)}>Actualiser</button>}</div>
+            <div className="page-heading compact"><div><p className="eyebrow">Explorateur</p><h1>Dossiers et relations</h1><p>Parcourez les sous-dossiers un niveau à la fois, ou consultez les liens entre documents.</p></div>{project.status === "ready" && <button className="secondary-button" onClick={() => setLibraryRefresh((value) => value + 1)}>Actualiser</button>}</div>
             {project.status !== "ready" ? <div className="blank-panel"><h2>Aucun projet sélectionné</h2><button className="secondary-button" onClick={() => setActiveView("home")}>Choisir un projet</button></div> : (
               <>
+                <div className="relation-view-switch" role="group" aria-label="Mode de l'explorateur"><button type="button" className={relationView === "folders" ? "active" : ""} onClick={() => setRelationView("folders")}>Dossiers</button><button type="button" className={relationView === "links" ? "active" : ""} onClick={() => setRelationView("links")}>Relations</button></div>
+                {relationView === "folders" ? <ProjectExplorer key={project.project.id} projectName={project.project.name} rootPath={project.project.sourceRoot} library={libraryData ?? null} /> : <>
                 <div className="relation-toolbar">
                   <input type="search" value={relationSearch} onChange={(event) => setRelationSearch(event.target.value)} placeholder="Rechercher une personne, un organisme…" />
                   <select value={focusDocument} onChange={(event) => setFocusDocument(event.target.value)}><option value="Tous">Tous les documents</option>{libraryData?.documents.map((document) => <option value={document.jobId} key={document.jobId}>{document.name}</option>)}</select>
@@ -1129,6 +1133,7 @@ function App() {
                     {relationGroups.length === 0 && <div className="no-results">Aucun document relié ne correspond à ces filtres.</div>}
                   </div>
                 </div>}
+                </>}
               </>
             )}
           </section>

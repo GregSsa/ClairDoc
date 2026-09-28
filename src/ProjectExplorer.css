@@ -1,0 +1,52 @@
+.project-explorer { overflow: hidden; border: 1px solid #dce7e2; border-radius: 20px; background: #fff; box-shadow: 0 12px 32px rgba(36, 70, 60, .05); }
+.explorer-topline { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 64px; padding: 12px 20px; border-bottom: 1px solid #e4ebe8; }
+.explorer-breadcrumbs { min-width: 0; display: flex; align-items: center; gap: 7px; overflow: hidden; white-space: nowrap; }
+.explorer-breadcrumbs > span { min-width: 0; display: inline-flex; align-items: center; gap: 7px; }
+.explorer-breadcrumbs button { max-width: 180px; overflow: hidden; text-overflow: ellipsis; border: 0; color: #246d5b; background: none; font-weight: 700; cursor: pointer; white-space: nowrap; }
+.explorer-breadcrumbs select { max-width: 55px; border: 0; color: #246d5b; background: transparent; cursor: pointer; }
+.explorer-refresh, .explorer-actions button, .explorer-pagination button, .explorer-more, .explorer-selection button, .explorer-link-filter button { min-height: 38px; padding: 7px 11px; border: 1px solid #cddbd4; border-radius: 9px; color: #285f50; background: #f7faf8; font-weight: 700; cursor: pointer; }
+.explorer-refresh:hover, .explorer-actions button:hover:not(:disabled), .explorer-pagination button:hover:not(:disabled), .explorer-more:hover, .explorer-selection button:hover:not(:disabled) { border-color: #83b3a2; background: #eef7f2; }
+.explorer-actions button:disabled, .explorer-pagination button:disabled, .explorer-selection button:disabled { opacity: .52; cursor: not-allowed; }
+.explorer-actions .danger { color: #985448; border-color: #eaccc7; background: #fff8f7; }
+.explorer-toolbar { display: grid; grid-template-columns: minmax(250px, 1fr) minmax(200px, 260px); gap: 14px; padding: 18px 20px; }
+.explorer-toolbar label { display: grid; gap: 7px; color: #5c7067; font-size: 12px; font-weight: 700; }
+.explorer-toolbar input, .explorer-toolbar select { width: 100%; min-width: 0; height: 43px; padding: 0 12px; border: 1px solid #d6e0da; border-radius: 10px; color: #243e34; background: #fff; font-size: 14px; }
+.explorer-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 20px 15px; color: #596d64; font-size: 13px; }
+.explorer-actions > div, .explorer-selection > div:last-child { display: flex; flex-wrap: wrap; gap: 8px; }
+.explorer-link-filter { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 20px 16px; padding: 10px 12px; border-radius: 10px; color: #286250; background: #eaf6ef; font-size: 13px; }
+.explorer-notice { margin: 12px 20px 0; padding: 10px 12px; border-radius: 10px; color: #72521e; background: #fff3d8; font-size: 13px; }
+.explorer-error { margin: 0 20px 16px; padding: 10px 12px; border-radius: 10px; color: #8b3f3f; background: #fff0ee; font-size: 13px; }
+.explorer-list { min-height: 200px; max-height: 620px; overflow: auto; border-top: 1px solid #e4ebe8; }
+.explorer-row { width: 100%; min-height: 63px; padding: 10px 20px; display: flex; align-items: center; gap: 14px; border: 0; border-bottom: 1px solid #edf1ee; color: #294438; background: #fff; text-align: left; cursor: pointer; }
+.explorer-row:hover, .explorer-row:focus-visible { background: #f2f8f4; }
+.explorer-row.selected { background: #eaf5ef; box-shadow: inset 3px 0 #269273; }
+.explorer-row > span:nth-child(2) { min-width: 0; display: grid; gap: 3px; }
+.explorer-row strong, .explorer-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.explorer-row strong { font-size: 14px; }
+.explorer-row small { color: #73847b; font-size: 12px; }
+.explorer-file-icon { width: 36px; height: 36px; flex: none; display: grid; place-items: center; border-radius: 10px; color: #4b7b6c; background: #e9f2ec; font-size: 19px; }
+.explorer-file-icon.folder { color: #9b6a22; background: #fff2d7; }
+.explorer-row-end { margin-left: auto; flex: none; color: #6d8277; font-size: 13px; }
+.explorer-empty { margin: 0; padding: 35px 20px; color: #708078; text-align: center; }
+.explorer-parent > span:first-child { width: 36px; text-align: center; color: #397b64; font-size: 24px; }
+.explorer-pagination { display: flex; align-items: center; justify-content: center; gap: 15px; padding: 14px 20px; color: #61766b; font-size: 13px; }
+.explorer-more { display: block; margin: 15px auto; }
+.explorer-selection { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 17px 20px; border-top: 1px solid #dce7e2; background: #f6faf7; }
+.explorer-selection > div:first-child { min-width: 0; }
+.explorer-selection strong, .explorer-selection small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.explorer-selection small { margin-top: 4px; color: #70847a; }
+.explorer-selection p { margin: 6px 0 0; color: #496f5e; font-size: 12px; }
+[data-theme="dark"] .project-explorer { border-color: #2b3a36; background: #19231f; box-shadow: none; }
+[data-theme="dark"] .explorer-topline, [data-theme="dark"] .explorer-list, [data-theme="dark"] .explorer-selection { border-color: #2f3e39; }
+[data-theme="dark"] .explorer-breadcrumbs button, [data-theme="dark"] .explorer-breadcrumbs select, [data-theme="dark"] .explorer-refresh, [data-theme="dark"] .explorer-actions button, [data-theme="dark"] .explorer-pagination button, [data-theme="dark"] .explorer-more, [data-theme="dark"] .explorer-selection button { color: #b8e4d2; background: #22332b; border-color: #385548; }
+[data-theme="dark"] .explorer-toolbar label, [data-theme="dark"] .explorer-actions, [data-theme="dark"] .explorer-pagination { color: #adbbb3; }
+[data-theme="dark"] .explorer-toolbar input, [data-theme="dark"] .explorer-toolbar select { color: #ecf5ed; background: #15221b; border-color: #385045; }
+[data-theme="dark"] .explorer-row { color: #e7f2ea; background: #19231f; border-color: #2a3931; }
+[data-theme="dark"] .explorer-row:hover, [data-theme="dark"] .explorer-row:focus-visible, [data-theme="dark"] .explorer-row.selected { background: #243a2c; }
+[data-theme="dark"] .explorer-row small, [data-theme="dark"] .explorer-row-end, [data-theme="dark"] .explorer-selection small, [data-theme="dark"] .explorer-empty { color: #a6b8ab; }
+[data-theme="dark"] .explorer-selection { background: #1d2c22; }
+[data-theme="dark"] .explorer-selection p { color: #b5d7c1; }
+[data-theme="dark"] .explorer-link-filter { color: #cae9d4; background: #244331; }
+[data-theme="dark"] .explorer-notice { color: #f0cf92; background: #3d311e; }
+[data-theme="dark"] .explorer-error { color: #ffbcb3; background: #3b2523; }
+@media (max-width: 760px) { .explorer-toolbar { grid-template-columns: 1fr; } .explorer-actions, .explorer-selection { align-items: flex-start; flex-direction: column; } .explorer-topline { align-items: flex-start; flex-direction: column; } }

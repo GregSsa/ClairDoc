@@ -40,6 +40,9 @@ Application de bureau destinée à aider les utilisateurs à inventorier, recher
 - mode sombre persistant ;
 - page de paramètres détaillant les modèles IA, l'OCR, le stockage et les limites ;
 - cartographie en arbre avec filtres par recherche, document et type de relation ;
+- explorateur de dossiers navigable niveau par niveau, avec fil d'Ariane compact et pagination de 100 éléments ;
+- recherche globale des documents depuis l'explorateur, filtre par catégorie et affichage des documents liés ;
+- création de sous-dossiers et suppression confirmée de dossiers vides, sans modifier les chemins des documents indexés ;
 - catégories de l'arbre repliables et ouverture d'un document par clic ;
 - choix persistant du modèle de réponse entre Luna, Terra et Sol ;
 - adresse du serveur affichée en lecture seule dans l'interface ;

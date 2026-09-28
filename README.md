@@ -34,6 +34,7 @@ Application de bureau destinée à aider les utilisateurs à inventorier, recher
 - autorisation par message pour les actions IA modifiant les documents ;
 - affichage des opérations exécutées ou en attente de confirmation ;
 - espace d'ajout guidé pour un dossier complet ou un document individuel ;
+- import d'un dossier existant depuis l'accueil, avec ses sous-dossiers et les chemins relatifs des documents conservés ;
 - menu de projet permettant de renommer, supprimer ou ouvrir le dossier source ;
 - suppression limitée aux données ClairDoc, sans toucher aux fichiers originaux ;
 - mode sombre persistant ;
@@ -93,6 +94,8 @@ npm run tauri dev
 Ces variables sont lues par le backend Rust et ne portent pas le préfixe `VITE_` : elles ne sont donc pas intégrées au JavaScript. Le fichier `.env` est ignoré par Git. Dans une application installée, la configuration enregistrée dans le dossier de données de l'application reste le mécanisme normal.
 
 La clé OpenAI ne doit pas être placée ici. `OPENAI_API_KEY` appartient exclusivement au fichier `.env` de ClairDoc Server.
+
+L'import lit le dossier choisi et envoie les documents pris en charge au serveur pour leur traitement ; il ne déplace pas les originaux. Les conversations et les modifications de catégories ou de liens fonctionnent ensuite sur les copies et métadonnées du projet. Pour que l'assistant déplace, renomme ou supprime un fichier original, le même dossier doit aussi être visible sur le PC serveur au même chemin. L'application affiche cet état dans la conversation et exige une autorisation avant une modification. Un dossier seulement présent sur le PC utilisateur ne peut pas encore être modifié par l'assistant à distance.
 
 Dans les paramètres, **Calcul des embeddings** permet de choisir OpenAI ou un calcul
 local sur le serveur (FastEmbed, MiniLM multilingue, CPU). Le premier calcul local

@@ -16,6 +16,7 @@ import {
   getOcrText,
   getServerConfig,
   getRuntimeInfo,
+  getProjectSourceAccess,
   listDocumentFiles,
   listConversations,
   listProjectDocuments,
@@ -208,6 +209,7 @@ function App() {
   const [assistantSending, setAssistantSending] = useState(false);
   const [assistantError, setAssistantError] = useState("");
   const [allowAssistantActions, setAllowAssistantActions] = useState(false);
+  const [sourceAccess, setSourceAccess] = useState<{ accessible: boolean; reason: string } | null>(null);
   const connected = connection.status === "connected";
 
   useEffect(() => {
@@ -248,6 +250,19 @@ function App() {
     if (connection.status !== "connected") return;
     listRemoteProjects().then(setProjects).catch(() => setProjects([]));
   }, [connection.status]);
+
+  useEffect(() => {
+    if (project.status !== "ready" || !connected) {
+      setSourceAccess(null);
+      return;
+    }
+    let active = true;
+    setSourceAccess(null);
+    getProjectSourceAccess(project.project.id)
+      .then((result) => { if (active) setSourceAccess(result); })
+      .catch((error) => { if (active) setSourceAccess({ accessible: false, reason: errorMessage(error, "Accès au dossier non vérifié.") }); });
+    return () => { active = false; };
+  }, [project, connected, batch.status, activeView]);
 
   useEffect(() => {
     if (ocr.status !== "processing") return;
@@ -561,6 +576,7 @@ function App() {
   async function chooseFolder() {
     const selected = await open({ directory: true, multiple: false, title: "Choisir le dossier à analyser" });
     if (!selected) return;
+    setActiveView("import");
     setOcr({ status: "idle" });
     setRag({ status: "idle" });
     setOrganization({ status: "idle" });
@@ -568,6 +584,9 @@ function App() {
     setScan({ status: "scanning", path: selected });
     try {
       const summary = await invoke<FolderSummary>("scan_folder", { path: selected });
+      if (project.status === "ready" && project.project.sourceRoot && project.project.sourceRoot !== summary.rootPath) {
+        selectProject();
+      }
       setScan({ status: "ready", summary });
     } catch (error) {
       setScan({ status: "error", message: errorMessage(error, "Le dossier n’a pas pu être analysé.") });
@@ -576,23 +595,39 @@ function App() {
 
   async function createProject() {
     if (scan.status !== "ready") return;
+    if (project.status === "ready") {
+      const selected = project.project;
+      if (selected.sourceRoot && selected.sourceRoot !== scan.summary.rootPath) return;
+      try {
+        const target = selected.sourceRoot ? selected : await updateRemoteProject(selected.id, undefined, scan.summary.rootPath);
+        setProject({ status: "ready", project: target });
+        setProjects((current) => current.map((item) => item.id === target.id ? target : item));
+        await importAllDocuments(target);
+      } catch (error) {
+        setProject({ status: "error", message: errorMessage(error, "Le dossier n’a pas pu être ajouté.") });
+      }
+      return;
+    }
     setProject({ status: "creating" });
     try {
       const created = await createRemoteProject(scan.summary.folderName, scan.summary.rootPath);
       setProject({ status: "ready", project: created });
       setProjects((current) => [created, ...current.filter((item) => item.id !== created.id)]);
+      await importAllDocuments(created);
     } catch (error) {
       setProject({ status: "error", message: errorMessage(error, "Le projet n’a pas pu être créé.") });
     }
   }
 
-  async function importAllDocuments() {
-    if (scan.status !== "ready" || project.status !== "ready") return;
+  async function importAllDocuments(target?: RemoteProject) {
+    if (scan.status !== "ready" || (!target && project.status !== "ready")) return;
+    const activeProject = target ?? (project.status === "ready" ? project.project : null);
+    if (!activeProject) return;
     setBatch({ status: "discovering" });
     try {
-      if (!project.project.sourceRoot) {
+      if (!activeProject.sourceRoot) {
         const updated = await updateRemoteProject(
-          project.project.id,
+          activeProject.id,
           undefined,
           scan.summary.rootPath,
         );
@@ -611,7 +646,7 @@ function App() {
         });
         return;
       }
-      await resumeProjectOcr(project.project.id);
+      await resumeProjectOcr(activeProject.id);
       setBatch({ status: "uploading", files, next: 0, jobIds: [], paused: false });
     } catch (error) {
       setBatch({
@@ -1006,7 +1041,7 @@ function App() {
       <main className="main-content">
         {activeView === "home" && (
           <section className="dashboard-view">
-            <div className="page-heading"><div><p className="eyebrow">Vue d’ensemble</p><h1>Vos documents, enfin clairs.</h1><p>Créez un espace par thème, personne ou activité. Chaque projet garde ses documents, ses liens et ses conversations séparés.</p></div><button className="primary-button" onClick={() => setActiveView("import")}>+ Ajouter des documents</button></div>
+            <div className="page-heading"><div><p className="eyebrow">Vue d’ensemble</p><h1>Vos documents, enfin clairs.</h1><p>Créez un espace par thème, personne ou activité. Chaque projet garde ses documents et conversations séparés.</p></div><button className="primary-button" onClick={chooseFolder}>Importer un dossier existant</button></div>
             <div className="dashboard-grid">
               <article className="new-project-card">
                 <div className="card-icon">+</div><h2>Nouveau projet</h2><p>Créez d’abord un espace vide, puis ajoutez un dossier complet ou quelques documents.</p>
@@ -1096,6 +1131,7 @@ function App() {
                 </aside>
                 <div className="chat-card">
                   <div className="chat-intro"><span>✦</span><div><strong>Assistant de {project.project.name}</strong><p>Demandez une date, un montant, un organisme ou une synthèse.</p></div></div>
+                  {sourceAccess && <div className={sourceAccess.accessible ? "source-access-note" : "source-access-note warning"}><strong>{sourceAccess.accessible ? "Dossier modifiable après autorisation" : "Modifications de fichiers indisponibles depuis le serveur"}</strong><p>{sourceAccess.reason} L’assistant peut toujours consulter les documents importés et gérer les métadonnées du projet.</p></div>}
                   {!indexResult && rag.status === "idle" && <div className="index-callout"><div><strong>Préparer la recherche intelligente</strong><p>ClairDoc doit créer l’index sémantique de ce projet avant la première question.</p></div><button className="primary-button" onClick={buildIndex}>Estimer l’indexation</button></div>}
                   {rag.status === "estimating" && <div className="ocr-progress"><span className="mini-spinner" /> Estimation en cours…</div>}
                   {rag.status === "estimate" && <div className="index-estimate"><strong>{formatNumber(rag.estimate.estimatedTokens)} tokens estimés</strong><p>{rag.estimate.documentsToEmbed} document(s) à encoder · coût approximatif {new Intl.NumberFormat("fr-FR", { style: "currency", currency: "USD", minimumFractionDigits: 4 }).format(rag.estimate.estimatedCostUsd)}</p><button className="primary-button" onClick={confirmIndex}>Confirmer</button></div>}
@@ -1110,7 +1146,7 @@ function App() {
                   </div>
                   {assistantError && <div className="error-result"><p>{assistantError}</p></div>}
                   <form className="chat-composer" onSubmit={ask}>
-                    <label className="assistant-permission"><input type="checkbox" checked={allowAssistantActions} onChange={(event) => setAllowAssistantActions(event.target.checked)} /><span>Autoriser les modifications pour ce message</span></label>
+                    <label className="assistant-permission"><input type="checkbox" checked={allowAssistantActions} onChange={(event) => setAllowAssistantActions(event.target.checked)} /><span>Autoriser les modifications pour ce message{sourceAccess && !sourceAccess.accessible ? " (métadonnées seulement si le serveur ne voit pas le dossier)" : ""}</span></label>
                     <textarea value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Posez une question ou demandez une action…" minLength={3} maxLength={4000} required />
                     <button className="primary-button" disabled={assistantSending || conversationLoading}>{assistantSending ? "…" : "Envoyer"}</button>
                   </form>
@@ -1191,7 +1227,7 @@ function App() {
             <div className="empty-state">
               <div className="folder-illustration"><FolderIcon /></div>
               <h2>Choisir le dossier à organiser</h2>
-              <p>Tous ses sous-dossiers seront inclus dans l’analyse.</p>
+              <p>Tous ses sous-dossiers seront inclus dans l’analyse. Un projet sera créé pour ce dossier, sauf si le projet ouvert attend déjà un dossier.</p>
               <button className="primary-button" onClick={chooseFolder}><FolderIcon /> Choisir un dossier</button>
               <p className="reassurance">Aucune suppression et aucun déplacement ne seront effectués.</p>
             </div>
@@ -1228,8 +1264,8 @@ function App() {
 
               <div className="summary-actions">
                 <button className="secondary-button" onClick={chooseFolder}>Choisir un autre dossier</button>
-                <button className="primary-button" disabled={!connected || project.status === "creating" || project.status === "ready"} onClick={createProject}>
-                  {project.status === "creating" ? "Création…" : project.status === "ready" ? "Projet créé" : "Créer le projet"}<span aria-hidden="true">→</span>
+                <button className="primary-button" disabled={!connected || project.status === "creating" || batch.status === "discovering" || batch.status === "uploading" || batch.status === "processing"} onClick={createProject}>
+                  {project.status === "creating" ? "Création…" : project.status === "ready" ? `Importer dans ${project.project.name}` : "Créer le projet et importer"}<span aria-hidden="true">→</span>
                 </button>
               </div>
               {!connected && <p className="coming-soon">Connectez d’abord ClairDoc Server.</p>}
@@ -1240,7 +1276,7 @@ function App() {
                 <section className="ocr-panel" aria-labelledby="ocr-title">
                   <div><p className="success-label">Projet prêt · {project.project.name}</p><h3 id="ocr-title">Importer les documents du dossier</h3><p>PDF, textes, Office, courriels et images sont inclus. Les fichiers identiques ne sont pas retraités.</p></div>
                   {batch.status === "idle" && (
-                    <div className="import-actions"><button className="primary-button" onClick={importAllDocuments}>Importer tous les documents</button><button className="text-button" onClick={choosePdf}>Ou choisir un seul document</button></div>
+                    <div className="import-actions"><button className="primary-button" onClick={() => void importAllDocuments()}>Importer tous les documents</button><button className="text-button" onClick={choosePdf}>Ou choisir un seul document</button></div>
                   )}
                   {batch.status === "discovering" && <div className="ocr-progress"><span className="mini-spinner" /> Recherche des documents…</div>}
                   {batch.status === "uploading" && (
@@ -1256,7 +1292,7 @@ function App() {
                       <progress value={completedJobs.length + failedJobs.length} max={Math.max(batch.jobIds.length, 1)} />
                     </div>
                   )}
-                  {batch.status === "completed" && <div className="batch-complete"><strong>Import terminé</strong><span>{completedJobs.length} document(s) prêt(s), {failedJobs.length} échec(s).</span><button className="text-button" onClick={importAllDocuments}>Rechercher les nouveaux documents</button></div>}
+                  {batch.status === "completed" && <div className="batch-complete"><strong>Import terminé</strong><span>{completedJobs.length} document(s) prêt(s), {failedJobs.length} échec(s).</span><button className="text-button" onClick={() => void importAllDocuments()}>Rechercher les nouveaux documents</button><button className="secondary-button" onClick={() => setActiveView("assistant")}>Demander à l’assistant de travailler sur ce projet</button></div>}
                   {batch.status === "error" && <div className="ocr-result error-result"><p>{batch.message}</p>{batch.files.length > 0 && <button className="secondary-button" onClick={resumeUploadAfterError}>Reprendre l’envoi</button>}</div>}
                   {failedJobs.length > 0 && <section className="import-errors" aria-label="Détail des échecs d’import"><h4>Documents en échec</h4><p>Ouvrez un document pour consulter la raison. Une relance seule ne corrige pas une erreur persistante.</p>{failedJobs.map((job) => <details key={job.id}><summary>{job.original_filename}</summary><pre>{job.error || "Le serveur n’a pas fourni de diagnostic."}</pre><small>Identifiant du traitement : {job.id}</small></details>)}<button className="secondary-button retry-button" onClick={retryFailedJobs}>Relancer {failedJobs.length} échec(s)</button></section>}
                   {batch.status === "idle" && projectJobs.length > 0 && <p className="existing-jobs">Historique : {completedJobs.length} terminé(s), {pendingJobs.length} en cours, {failedJobs.length} en échec.</p>}

@@ -213,6 +213,10 @@ export function openProjectFolder(path: string) {
   return invoke<void>("open_project_folder", { path });
 }
 
+export function getProjectSourceAccess(projectId: string) {
+  return invoke<{ accessible: boolean; reason: string }>("get_project_source_access", { projectId });
+}
+
 export function openProjectFile(rootPath: string, relativePath: string) {
   return invoke<void>("open_project_file", { rootPath, relativePath });
 }

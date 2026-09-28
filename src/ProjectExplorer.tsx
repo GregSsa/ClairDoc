@@ -6,7 +6,9 @@ import {
   openProjectFile,
   removeEmptyProjectDirectory,
   type DocumentLibrary,
+  type DraftAction,
   type LibraryDocument,
+  type ProjectDraft,
   type ProjectDirectoryEntry,
   type ProjectDirectoryPage,
 } from "./server";
@@ -19,7 +21,31 @@ type Props = {
   projectName: string;
   rootPath: string | null;
   library: DocumentLibrary | null;
+  draft: ProjectDraft | null;
+  draftApplying: { current: number; total: number } | null;
+  draftError: string;
+  draftNotice: string;
+  onApplyDraft: () => void;
+  onRemoveDraftItem: (conversationId: string, actionId: string) => void;
 };
+
+const EMPTY_DRAFT_ACTIONS: DraftAction[] = [];
+
+function plannedEntries(actions: DraftAction[], path: string): ProjectDirectoryEntry[] {
+  const prefix = path ? `${path}/` : "";
+  const entries = new Map<string, ProjectDirectoryEntry>();
+  for (const action of actions) {
+    const destination = action.destination_relative_path;
+    if (!destination?.startsWith(prefix)) continue;
+    const remainder = destination.slice(prefix.length);
+    const separator = remainder.indexOf("/");
+    const name = separator < 0 ? remainder : remainder.slice(0, separator);
+    if (!name) continue;
+    const relativePath = `${prefix}${name}`;
+    entries.set(relativePath, { name, relativePath, kind: separator < 0 ? "file" : "directory", bytes: 0 });
+  }
+  return [...entries.values()];
+}
 
 function parentPath(path: string) {
   const position = path.lastIndexOf("/");
@@ -45,8 +71,9 @@ function virtualPage(documents: LibraryDocument[], path: string, offset: number)
   return { entries: entries.slice(offset, offset + PAGE_SIZE), total: entries.length, offset, limit: PAGE_SIZE };
 }
 
-export default function ProjectExplorer({ projectName, rootPath, library }: Props) {
+export default function ProjectExplorer({ projectName, rootPath, library, draft, draftApplying, draftError, draftNotice, onApplyDraft, onRemoveDraftItem }: Props) {
   const documents = library?.documents ?? EMPTY_DOCUMENTS;
+  const draftActions = draft?.actions ?? EMPTY_DRAFT_ACTIONS;
   const [path, setPath] = useState("");
   const [page, setPage] = useState(0);
   const [directory, setDirectory] = useState<ProjectDirectoryPage | null>(null);
@@ -60,9 +87,33 @@ export default function ProjectExplorer({ projectName, rootPath, library }: Prop
   const [category, setCategory] = useState("Toutes");
   const [linkedTo, setLinkedTo] = useState<string | null>(null);
   const [resultLimit, setResultLimit] = useState(PAGE_SIZE);
+  const [draftLimit, setDraftLimit] = useState(30);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
 
-  const documentByPath = useMemo(() => new Map(documents.map((document) => [document.sourceRelativePath, document])), [documents]);
+  const previewDocuments = useMemo(() => {
+    const actionsByJob = new Map<string, DraftAction[]>();
+    for (const action of draftActions) {
+      const list = actionsByJob.get(action.job_id) ?? [];
+      list.push(action);
+      actionsByJob.set(action.job_id, list);
+    }
+    const result: LibraryDocument[] = [];
+    for (const document of documents) {
+      const actions = actionsByJob.get(document.jobId) ?? [];
+      const destructive = actions.find((action) => action.tool !== "copy_document");
+      if (!destructive) result.push(document);
+      if (destructive?.destination_relative_path) {
+        result.push({ ...document, name: destructive.destination_relative_path.slice(destructive.destination_relative_path.lastIndexOf("/") + 1), sourceRelativePath: destructive.destination_relative_path });
+      }
+      for (const action of actions) {
+        if (action.tool === "copy_document" && action.destination_relative_path) {
+          result.push({ ...document, name: action.destination_relative_path.slice(action.destination_relative_path.lastIndexOf("/") + 1), sourceRelativePath: action.destination_relative_path });
+        }
+      }
+    }
+    return result;
+  }, [documents, draftActions]);
+  const documentByPath = useMemo(() => new Map(previewDocuments.map((document) => [document.sourceRelativePath, document])), [previewDocuments]);
   const selectedDocument = selectedPath ? documentByPath.get(selectedPath) : undefined;
   const linkedDocument = linkedTo ? documents.find((document) => document.jobId === linkedTo) : undefined;
   const linkedIds = useMemo(() => {
@@ -85,7 +136,7 @@ export default function ProjectExplorer({ projectName, rootPath, library }: Prop
   const folderCounts = useMemo(() => {
     const counts = new Map<string, number>();
     const prefix = path ? `${path}/` : "";
-    for (const document of documents) {
+    for (const document of previewDocuments) {
       if (!document.sourceRelativePath.startsWith(prefix)) continue;
       const remainder = document.sourceRelativePath.slice(prefix.length);
       const separator = remainder.indexOf("/");
@@ -95,14 +146,33 @@ export default function ProjectExplorer({ projectName, rootPath, library }: Prop
       }
     }
     return counts;
-  }, [documents, path]);
+  }, [previewDocuments, path]);
+  const displayedEntries = useMemo(() => {
+    const hidden = new Set(draftActions.filter((action) => action.tool === "move_document" || action.tool === "rename_document" || action.tool === "delete_document").map((action) => action.source_relative_path));
+    const entries = (directory?.entries ?? []).filter((entry) => !hidden.has(entry.relativePath));
+    const known = new Set(entries.map((entry) => entry.relativePath));
+    for (const entry of plannedEntries(draftActions, path)) {
+      if (!known.has(entry.relativePath)) entries.push(entry);
+    }
+    return entries.sort((left, right) => Number(right.kind === "directory") - Number(left.kind === "directory") || left.name.localeCompare(right.name, "fr", { sensitivity: "base" }));
+  }, [directory, draftActions, path]);
+  const plannedPaths = useMemo(() => new Set(draftActions.map((action) => action.destination_relative_path).filter((value): value is string => !!value)), [draftActions]);
+  const plannedFolders = useMemo(() => [...new Set(draftActions.map((action) => action.destination_relative_path ? parentPath(action.destination_relative_path) : "").filter(Boolean))].sort((a, b) => a.localeCompare(b, "fr")), [draftActions]);
+  const plannedDirectoryPaths = useMemo(() => {
+    const paths = new Set<string>();
+    for (const folder of plannedFolders) {
+      const parts = folder.split("/");
+      for (let index = 1; index <= parts.length; index += 1) paths.add(parts.slice(0, index).join("/"));
+    }
+    return paths;
+  }, [plannedFolders]);
   const searchMode = Boolean(deferredSearch || category !== "Toutes" || linkedTo);
-  const results = useMemo(() => documents.filter((document) => {
+  const results = useMemo(() => previewDocuments.filter((document) => {
     if (category !== "Toutes" && document.category !== category) return false;
     if (linkedTo && !linkedIds.has(document.jobId)) return false;
     return !deferredSearch || [document.name, document.sourceRelativePath, document.category, document.organization ?? ""]
       .some((value) => value.toLocaleLowerCase("fr").includes(deferredSearch));
-  }), [category, deferredSearch, documents, linkedIds, linkedTo]);
+  }), [category, deferredSearch, previewDocuments, linkedIds, linkedTo]);
 
   useEffect(() => {
     let active = true;
@@ -201,6 +271,7 @@ export default function ProjectExplorer({ projectName, rootPath, library }: Prop
   const hiddenAncestors = breadcrumbs.slice(0, -3);
   const shownAncestors = breadcrumbs.slice(-3);
   const displayedResults = results.slice(0, resultLimit);
+  const selectedIsPlanned = selectedPath ? plannedPaths.has(selectedPath) : false;
 
   return (
     <div className="project-explorer">
@@ -212,14 +283,17 @@ export default function ProjectExplorer({ projectName, rootPath, library }: Prop
         </div>
         <button type="button" className="explorer-refresh" onClick={() => setRefresh((value) => value + 1)}>Actualiser</button>
       </div>
-      {!localAvailable && !loading && <p className="explorer-notice">Le dossier local n'est pas accessible sur ce PC. Affichage des documents déjà importés ; les dossiers vides et les fichiers non importés ne sont pas visibles.</p>}
+      {!localAvailable && !loading && <p className="explorer-notice">{plannedDirectoryPaths.has(path) ? "Ce dossier fait partie du brouillon : il sera créé lors de la validation." : "Le dossier local n'est pas accessible sur ce PC. Affichage des documents déjà importés ; les dossiers vides et les fichiers non importés ne sont pas visibles."}</p>}
+      {draftActions.length > 0 && <section className="explorer-draft" aria-label="Brouillon des modifications"><div className="explorer-draft-heading"><div><span className="explorer-draft-kicker">APERÇU · RIEN N'EST ENCORE MODIFIÉ</span><h2>{draftActions.length} modification(s) prévues</h2><p>Les nouveaux chemins apparaissent dans l'arbre ci-dessous. Vérifiez-les avant d'appliquer le brouillon au dossier du PC.</p></div><button type="button" disabled={!!draftApplying} onClick={onApplyDraft}>{draftApplying ? `Application ${draftApplying.current}/${draftApplying.total}…` : "Valider le brouillon"}</button></div>{plannedFolders.length > 0 && <div className="explorer-draft-folders"><strong>Dossiers de destination</strong><div>{plannedFolders.slice(0, 20).map((folder) => <button type="button" key={folder} onClick={() => navigate(folder)}>▰ {folder}</button>)}{plannedFolders.length > 20 && <small>+ {plannedFolders.length - 20} autre(s) dossier(s)</small>}</div></div>}<div className="explorer-draft-list">{draftActions.slice(0, draftLimit).map((action) => <div className="explorer-draft-action" key={action.id}><span><strong>{action.tool === "copy_document" ? "Copier" : action.tool === "move_document" ? "Déplacer" : action.tool === "rename_document" ? "Renommer" : "Corbeille"}</strong><small>{action.source_relative_path}{action.destination_relative_path ? ` → ${action.destination_relative_path}` : " → .clairdoc/trash"}</small></span><button type="button" disabled={!!draftApplying} onClick={() => onRemoveDraftItem(action.conversation_id, action.id)}>Retirer</button></div>)}{draftActions.length > draftLimit && <button type="button" className="explorer-draft-more" onClick={() => setDraftLimit((value) => value + 30)}>Afficher davantage</button>}</div></section>}
+      {draftError && <p className="explorer-error" role="alert">{draftError}</p>}
+      {draftNotice && <p className="explorer-notice" role="status">{draftNotice}</p>}
       <div className="explorer-toolbar">
         <label>Rechercher dans tout le projet<input type="search" value={search} onChange={(event) => { setSearch(event.target.value); setResultLimit(PAGE_SIZE); }} placeholder="Nom, chemin ou organisme…" /></label>
         <label>Catégorie<select value={category} onChange={(event) => { setCategory(event.target.value); setResultLimit(PAGE_SIZE); }}><option value="Toutes">Toutes les catégories</option>{library?.categories.map((item) => <option key={item}>{item}</option>)}</select></label>
       </div>
       {linkedDocument && <div className="explorer-link-filter"><span>Documents liés à <strong>{linkedDocument.name}</strong></span><button type="button" onClick={() => setLinkedTo(null)}>Effacer ce filtre</button></div>}
       <div className="explorer-actions">
-        <span>{searchMode ? `${results.length} document(s) trouvé(s)` : `${directory?.total ?? 0} élément(s) dans ce dossier`}</span>
+        <span>{searchMode ? `${results.length} document(s) trouvé(s)` : `${displayedEntries.length} élément(s) affiché(s) dans ce dossier${draftActions.length ? " · aperçu inclus" : ""}`}</span>
         <div>
           <button type="button" disabled={!localAvailable || busy} onClick={openCurrentFolder}>Ouvrir dans l'explorateur</button>
           <button type="button" disabled={!localAvailable || busy} onClick={createFolder}>+ Nouveau dossier</button>
@@ -230,18 +304,18 @@ export default function ProjectExplorer({ projectName, rootPath, library }: Prop
       <div className="explorer-list" aria-label={searchMode ? "Résultats de recherche" : "Contenu du dossier"}>
         {!searchMode && loading && <p className="explorer-empty">Chargement du dossier…</p>}
         {!searchMode && !loading && path && <button type="button" className="explorer-row explorer-parent" onClick={() => navigate(parentPath(path))}><span aria-hidden="true">↶</span><span><strong>Dossier parent</strong><small>Remonter d'un niveau</small></span></button>}
-        {!searchMode && !loading && directory?.entries.map((entry) => entry.kind === "directory" ? (
-          <button type="button" className="explorer-row" key={entry.relativePath} onClick={() => navigate(entry.relativePath)}><span className="explorer-file-icon folder" aria-hidden="true">▰</span><span><strong>{entry.name}</strong><small>{folderCounts.get(entry.name) ?? 0} document(s) importé(s) dans ce dossier et ses sous-dossiers</small></span><span className="explorer-row-end" aria-hidden="true">›</span></button>
+        {!searchMode && !loading && displayedEntries.map((entry) => entry.kind === "directory" ? (
+          <button type="button" className={`explorer-row ${plannedDirectoryPaths.has(entry.relativePath) ? "planned" : ""}`} key={entry.relativePath} onClick={() => navigate(entry.relativePath)}><span className="explorer-file-icon folder" aria-hidden="true">▰</span><span><strong>{entry.name}</strong><small>{plannedDirectoryPaths.has(entry.relativePath) ? "Dossier présent dans le brouillon" : `${folderCounts.get(entry.name) ?? 0} document(s) importé(s) dans ce dossier et ses sous-dossiers`}</small></span><span className="explorer-row-end" aria-hidden="true">›</span></button>
         ) : (
-          <button type="button" className={`explorer-row ${selectedPath === entry.relativePath ? "selected" : ""}`} key={entry.relativePath} onClick={() => setSelectedPath(entry.relativePath)} onDoubleClick={() => void openSelected(entry.relativePath)}><span className="explorer-file-icon" aria-hidden="true">▤</span><span><strong>{entry.name}</strong><small>{documentByPath.has(entry.relativePath) ? `${documentByPath.get(entry.relativePath)?.category} · importé` : "Non importé"}{entry.bytes ? ` · ${new Intl.NumberFormat("fr-FR").format(entry.bytes)} octets` : ""}</small></span><span className="explorer-row-end" aria-hidden="true">›</span></button>
+          <button type="button" className={`explorer-row ${selectedPath === entry.relativePath ? "selected" : ""} ${plannedPaths.has(entry.relativePath) ? "planned" : ""}`} key={entry.relativePath} onClick={() => setSelectedPath(entry.relativePath)} onDoubleClick={() => { if (!plannedPaths.has(entry.relativePath)) void openSelected(entry.relativePath); }}><span className="explorer-file-icon" aria-hidden="true">▤</span><span><strong>{entry.name}</strong><small>{plannedPaths.has(entry.relativePath) ? "Prévu dans le brouillon · non présent sur le disque" : documentByPath.has(entry.relativePath) ? `${documentByPath.get(entry.relativePath)?.category} · importé` : "Non importé"}{entry.bytes ? ` · ${new Intl.NumberFormat("fr-FR").format(entry.bytes)} octets` : ""}</small></span><span className="explorer-row-end" aria-hidden="true">›</span></button>
         ))}
-        {!searchMode && !loading && directory?.total === 0 && <p className="explorer-empty">Ce dossier est vide.</p>}
-        {searchMode && displayedResults.map((document) => <button type="button" className={`explorer-row ${selectedPath === document.sourceRelativePath ? "selected" : ""}`} key={document.jobId} onClick={() => setSelectedPath(document.sourceRelativePath)}><span className="explorer-file-icon" aria-hidden="true">▤</span><span><strong>{document.name}</strong><small>{document.sourceRelativePath} · {document.category}</small></span><span className="explorer-row-end">{relationCounts.get(document.jobId) ?? 0} lien(s)</span></button>)}
+        {!searchMode && !loading && displayedEntries.length === 0 && <p className="explorer-empty">Ce dossier est vide.</p>}
+        {searchMode && displayedResults.map((document) => <button type="button" className={`explorer-row ${selectedPath === document.sourceRelativePath ? "selected" : ""} ${plannedPaths.has(document.sourceRelativePath) ? "planned" : ""}`} key={`${document.jobId}-${document.sourceRelativePath}`} onClick={() => setSelectedPath(document.sourceRelativePath)}><span className="explorer-file-icon" aria-hidden="true">▤</span><span><strong>{document.name}</strong><small>{document.sourceRelativePath} · {document.category}{plannedPaths.has(document.sourceRelativePath) ? " · brouillon" : ""}</small></span><span className="explorer-row-end">{relationCounts.get(document.jobId) ?? 0} lien(s)</span></button>)}
         {searchMode && results.length === 0 && <p className="explorer-empty">Aucun document ne correspond à ces filtres.</p>}
       </div>
       {!searchMode && directory && directory.total > PAGE_SIZE && <div className="explorer-pagination"><button type="button" disabled={page === 0 || loading} onClick={() => setPage((value) => Math.max(0, value - 1))}>Précédent</button><span>Page {page + 1} sur {Math.ceil(directory.total / PAGE_SIZE)}</span><button type="button" disabled={loading || (page + 1) * PAGE_SIZE >= directory.total} onClick={() => setPage((value) => value + 1)}>Suivant</button></div>}
       {searchMode && results.length > resultLimit && <button type="button" className="explorer-more" onClick={() => setResultLimit((value) => value + PAGE_SIZE)}>Afficher {Math.min(PAGE_SIZE, results.length - resultLimit)} résultats supplémentaires</button>}
-      {selectedPath && <div className="explorer-selection"><div><strong>{selectedPath.slice(selectedPath.lastIndexOf("/") + 1)}</strong><small>{selectedPath}</small>{selectedDocument && <p>{selectedDocument.category} · {relationCounts.get(selectedDocument.jobId) ?? 0} lien(s) · {selectedDocument.status === "indexed" ? "indexé" : "à indexer"}</p>}</div><div><button type="button" disabled={!localAvailable} onClick={() => void openSelected(selectedPath)}>Ouvrir le fichier</button>{selectedDocument && <button type="button" onClick={() => { setLinkedTo(selectedDocument.jobId); setResultLimit(PAGE_SIZE); }}>Voir ses liens</button>}{!searchMode && selectedDocument && <button type="button" onClick={() => { setSearch(selectedDocument.name); setResultLimit(PAGE_SIZE); }}>Rechercher ce nom</button>}</div></div>}
+      {selectedPath && <div className="explorer-selection"><div><strong>{selectedPath.slice(selectedPath.lastIndexOf("/") + 1)}</strong><small>{selectedPath}</small>{selectedIsPlanned ? <p>Chemin prévu : le fichier sera disponible après validation.</p> : selectedDocument && <p>{selectedDocument.category} · {relationCounts.get(selectedDocument.jobId) ?? 0} lien(s) · {selectedDocument.status === "indexed" ? "indexé" : "à indexer"}</p>}</div><div><button type="button" disabled={!localAvailable || selectedIsPlanned} onClick={() => void openSelected(selectedPath)}>Ouvrir le fichier</button>{selectedDocument && <button type="button" onClick={() => { setLinkedTo(selectedDocument.jobId); setResultLimit(PAGE_SIZE); }}>Voir ses liens</button>}{!searchMode && selectedDocument && <button type="button" onClick={() => { setSearch(selectedDocument.name); setResultLimit(PAGE_SIZE); }}>Rechercher ce nom</button>}</div></div>}
     </div>
   );
 }

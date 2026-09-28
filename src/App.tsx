@@ -5,6 +5,7 @@ import ProjectExplorer from "./ProjectExplorer";
 import {
   applyLocalAssistantAction,
   applyOrganizationPlan,
+  cancelDraftAction,
   createConversation,
   createOrganizationPlan,
   createRemoteProject,
@@ -19,6 +20,7 @@ import {
   getServerConfig,
   getRuntimeInfo,
   getProjectSourceAccess,
+  getProjectDraft,
   listDocumentFiles,
   listConversations,
   listProjectDocuments,
@@ -41,6 +43,7 @@ import {
   OcrJob,
   OrganizationPlan,
   RemoteProject,
+  ProjectDraft,
   RuntimeInfo,
   submitOcrJob,
   testServerConnection,
@@ -210,9 +213,14 @@ function App() {
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [conversationLoading, setConversationLoading] = useState(false);
   const [assistantSending, setAssistantSending] = useState(false);
-  const [applyingLocalAction, setApplyingLocalAction] = useState<string | null>(null);
+  const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
+  const [draft, setDraft] = useState<ProjectDraft | null>(null);
+  const [draftRefresh, setDraftRefresh] = useState(0);
+  const [draftApplying, setDraftApplying] = useState<{ current: number; total: number } | null>(null);
+  const [draftError, setDraftError] = useState("");
+  const [draftNotice, setDraftNotice] = useState("");
   const [assistantError, setAssistantError] = useState("");
-  const [allowAssistantActions, setAllowAssistantActions] = useState(false);
+  const [allowAssistantActions, setAllowAssistantActions] = useState(() => localStorage.getItem("clairdoc-allow-metadata-actions") === "true");
   const [sourceAccess, setSourceAccess] = useState<{ accessible: boolean; reason: string } | null>(null);
   const connected = connection.status === "connected";
 
@@ -249,6 +257,22 @@ function App() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("clairdoc-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    localStorage.setItem("clairdoc-allow-metadata-actions", String(allowAssistantActions));
+  }, [allowAssistantActions]);
+
+  useEffect(() => {
+    if (project.status !== "ready" || !connected) {
+      setDraft(null);
+      return;
+    }
+    let active = true;
+    getProjectDraft(project.project.id)
+      .then((result) => { if (active) { setDraft(result); setDraftError(""); } })
+      .catch((error) => { if (active) setDraftError(errorMessage(error, "Brouillon indisponible.")); });
+    return () => { active = false; };
+  }, [project, connected, draftRefresh, activeView]);
 
   useEffect(() => {
     if (connection.status !== "connected") return;
@@ -464,6 +488,10 @@ function App() {
     setConversations([]);
     setActiveConversation(null);
     setAssistantError("");
+    setDraftError("");
+    setDraftNotice("");
+    setDraft(null);
+    setPendingQuestion(null);
     setProjectMenu(null);
   }
 
@@ -918,49 +946,91 @@ function App() {
   async function ask(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (project.status !== "ready" || !question.trim() || assistantSending) return;
-    let conversation = activeConversation;
-    if (!conversation) {
-      conversation = await createConversation(project.project.id);
-      setActiveConversation(conversation);
-    }
+    const projectId = project.project.id;
     const submitted = question.trim();
     setQuestion("");
+    setPendingQuestion(submitted);
     setAssistantSending(true);
     setAssistantError("");
     try {
-      await sendConversationMessage(
-        project.project.id,
+      let conversation = activeConversation;
+      if (!conversation) {
+        conversation = await createConversation(projectId);
+        setActiveConversation(conversation);
+      }
+      const result = await sendConversationMessage(
+        projectId,
         conversation.id,
         submitted,
         allowAssistantActions,
       );
-      const refreshed = await getConversation(project.project.id, conversation.id);
+      const refreshed = await getConversation(projectId, conversation.id);
       setActiveConversation(refreshed);
-      setConversations(await listConversations(project.project.id));
+      setPendingQuestion(null);
+      setConversations(await listConversations(projectId));
       setLibraryRefresh((value) => value + 1);
-      setAllowAssistantActions(false);
+      setDraftRefresh((value) => value + 1);
+      if (result.actions.some((action) => action.status === "validation_requested")) {
+        await applyDraft(projectId);
+      }
     } catch (error) {
       setQuestion(submitted);
       setAssistantError(errorMessage(error, "La question n’a pas pu être traitée."));
     } finally {
+      setPendingQuestion(null);
       setAssistantSending(false);
     }
   }
 
-  async function confirmLocalAction(actionId: string, summary: string) {
-    if (project.status !== "ready" || !activeConversation || applyingLocalAction) return;
-    if (!window.confirm(`${summary}\n\nConfirmer cette modification du dossier sur ce PC ? Aucun fichier existant ne sera remplacé. Une suppression place le document dans la corbeille ClairDoc du projet.`)) return;
-    setApplyingLocalAction(actionId);
-    setAssistantError("");
+  async function applyDraft(projectId: string) {
+    if (draftApplying) return;
+    setDraftError("");
+    setDraftNotice("");
     try {
-      await applyLocalAssistantAction(project.project.id, activeConversation.id, actionId);
-      setActiveConversation(await getConversation(project.project.id, activeConversation.id));
-      setConversations(await listConversations(project.project.id));
+      const current = await getProjectDraft(projectId);
+      setDraft(current);
+      if (!current.actions.length) {
+        setDraftNotice("Le brouillon ne contient aucune modification à appliquer.");
+        return;
+      }
+      const preview = current.actions.slice(0, 8).map((action) => `• ${action.summary}`).join("\n");
+      if (!window.confirm(`Appliquer ${current.actions.length} modification(s) sur ce PC ?\n\n${preview}${current.actions.length > 8 ? "\n• …" : ""}\n\nLes fichiers existants ne seront pas remplacés. Les suppressions vont dans .clairdoc/trash.`)) return;
+      let applied = 0;
+      for (const action of current.actions) {
+        setDraftApplying({ current: applied + 1, total: current.actions.length });
+        try {
+          await applyLocalAssistantAction(projectId, action.conversation_id, action.id);
+          applied += 1;
+        } catch (error) {
+          setDraftError(`${applied} action(s) appliquée(s), puis arrêt : ${errorMessage(error, "Modification impossible.")} Les autres restent dans le brouillon.`);
+          break;
+        }
+      }
+      if (applied === current.actions.length) setDraftNotice(`${applied} modification(s) appliquée(s) au dossier local.`);
+      setDraft(await getProjectDraft(projectId));
+      if (activeConversation?.projectId === projectId) {
+        setActiveConversation(await getConversation(projectId, activeConversation.id));
+      }
+      setConversations(await listConversations(projectId));
       setLibraryRefresh((value) => value + 1);
+      setDraftRefresh((value) => value + 1);
     } catch (error) {
-      setAssistantError(errorMessage(error, "La modification locale n’a pas pu être appliquée."));
+      setDraftError(errorMessage(error, "Impossible d'appliquer le brouillon."));
     } finally {
-      setApplyingLocalAction(null);
+      setDraftApplying(null);
+    }
+  }
+
+  async function removeDraftItem(conversationId: string, actionId: string) {
+    if (project.status !== "ready" || draftApplying) return;
+    try {
+      await cancelDraftAction(project.project.id, conversationId, actionId);
+      setDraft(await getProjectDraft(project.project.id));
+      if (activeConversation?.id === conversationId) {
+        setActiveConversation(await getConversation(project.project.id, conversationId));
+      }
+    } catch (error) {
+      setDraftError(errorMessage(error, "Impossible de retirer cette proposition."));
     }
   }
 
@@ -1116,7 +1186,7 @@ function App() {
             {project.status !== "ready" ? <div className="blank-panel"><h2>Aucun projet sélectionné</h2><button className="secondary-button" onClick={() => setActiveView("home")}>Choisir un projet</button></div> : (
               <>
                 <div className="relation-view-switch" role="group" aria-label="Mode de l'explorateur"><button type="button" className={relationView === "folders" ? "active" : ""} onClick={() => setRelationView("folders")}>Dossiers</button><button type="button" className={relationView === "links" ? "active" : ""} onClick={() => setRelationView("links")}>Relations</button></div>
-                {relationView === "folders" ? <ProjectExplorer key={project.project.id} projectName={project.project.name} rootPath={project.project.sourceRoot} library={libraryData ?? null} /> : <>
+                {relationView === "folders" ? <ProjectExplorer key={project.project.id} projectName={project.project.name} rootPath={project.project.sourceRoot} library={libraryData ?? null} draft={draft} draftApplying={draftApplying} draftError={draftError} draftNotice={draftNotice} onApplyDraft={() => void applyDraft(project.project.id)} onRemoveDraftItem={(conversationId, actionId) => void removeDraftItem(conversationId, actionId)} /> : <>
                 <div className="relation-toolbar">
                   <input type="search" value={relationSearch} onChange={(event) => setRelationSearch(event.target.value)} placeholder="Rechercher une personne, un organisme…" />
                   <select value={focusDocument} onChange={(event) => setFocusDocument(event.target.value)}><option value="Tous">Tous les documents</option>{libraryData?.documents.map((document) => <option value={document.jobId} key={document.jobId}>{document.name}</option>)}</select>
@@ -1155,7 +1225,10 @@ function App() {
                 </aside>
                 <div className="chat-card">
                   <div className="chat-intro"><span>✦</span><div><strong>Assistant de {project.project.name}</strong><p>Demandez une date, un montant, un organisme ou une synthèse.</p></div></div>
-                  {project.project.sourceRoot && <div className="source-access-note"><strong>Modifications locales après validation</strong><p>L’assistant peut proposer de copier, déplacer, renommer ou mettre à la corbeille un document. Chaque action devra être confirmée ici avant de toucher au dossier de ce PC.{sourceAccess && !sourceAccess.accessible ? " Le serveur utilise les copies importées pour consulter les documents." : ""}</p></div>}
+                  {project.project.sourceRoot && <div className="source-access-note"><strong>Brouillon avant toute modification</strong><p>L’assistant prépare les changements sans toucher aux fichiers. Vérifiez l'ébauche dans l'Explorateur, puis demandez-lui de valider ou utilisez le bouton ci-dessous.{sourceAccess && !sourceAccess.accessible ? " Le serveur utilise les copies importées pour consulter les documents." : ""}</p></div>}
+                  {draft && draft.actions.length > 0 && <div className="assistant-draft-banner"><span><strong>{draft.actions.length} modification(s) en brouillon</strong><small>Aucun fichier local modifié pour le moment.</small></span><button type="button" className="secondary-button" disabled={!!draftApplying} onClick={() => setActiveView("relations")}>Voir dans l'Explorateur</button><button type="button" className="primary-button" disabled={!!draftApplying} onClick={() => void applyDraft(project.project.id)}>{draftApplying ? `Application ${draftApplying.current}/${draftApplying.total}…` : "Valider le brouillon"}</button></div>}
+                  {draftError && <div className="error-result" role="alert"><p>{draftError}</p></div>}
+                  {draftNotice && <div className="source-access-note"><p>{draftNotice}</p></div>}
                   {!indexResult && rag.status === "idle" && <div className="index-callout"><div><strong>Préparer la recherche intelligente</strong><p>ClairDoc doit créer l’index sémantique de ce projet avant la première question.</p></div><button className="primary-button" onClick={buildIndex}>Estimer l’indexation</button></div>}
                   {rag.status === "estimating" && <div className="ocr-progress"><span className="mini-spinner" /> Estimation en cours…</div>}
                   {rag.status === "estimate" && <div className="index-estimate"><strong>{formatNumber(rag.estimate.estimatedTokens)} tokens estimés</strong><p>{rag.estimate.documentsToEmbed} document(s) à encoder · coût approximatif {new Intl.NumberFormat("fr-FR", { style: "currency", currency: "USD", minimumFractionDigits: 4 }).format(rag.estimate.estimatedCostUsd)}</p><button className="primary-button" onClick={confirmIndex}>Confirmer</button></div>}
@@ -1165,12 +1238,13 @@ function App() {
                   <div className="conversation">
                     {activeConversation?.messages.map((message) => message.role === "user"
                       ? <div className="user-message" key={message.id}>{message.content}</div>
-                      : <div className="assistant-message" key={message.id}><span>✦</span><div><p>{message.content}</p>{message.actions.length > 0 && <div className="action-list">{message.actions.map((action, index) => <span className={action.status} key={`${message.id}-${index}`}>{action.summary}{action.status === "pending_local" && action.id && <button type="button" disabled={!!applyingLocalAction} onClick={() => void confirmLocalAction(action.id!, action.summary)}>{applyingLocalAction === action.id ? "Application…" : "Vérifier et confirmer"}</button>}</span>)}</div>}<div className="source-list">{message.citations.map((citation, index) => <button type="button" key={`${citation.job_id}-${citation.chunk_index}`}><b>[{index + 1}] {citation.document_name}</b><small>{citation.page_number ? `Page ${citation.page_number} · ` : ""}{citation.excerpt}</small></button>)}</div></div></div>)}
-                    {!conversationLoading && activeConversation?.messages.length === 0 && <p className="empty-hint">Cette conversation est vide. Demandez une recherche, une synthèse ou une action sur le projet.</p>}
+                      : <div className="assistant-message" key={message.id}><span>✦</span><div><p>{message.content}</p>{message.actions.length > 0 && <div className="action-list">{message.actions.map((action, index) => <span className={action.status} key={`${message.id}-${index}`}>{action.summary}</span>)}</div>}<div className="source-list">{message.citations.map((citation, index) => <button type="button" key={`${citation.job_id}-${citation.chunk_index}`}><b>[{index + 1}] {citation.document_name}</b><small>{citation.page_number ? `Page ${citation.page_number} · ` : ""}{citation.excerpt}</small></button>)}</div></div></div>)}
+                    {pendingQuestion && <><div className="user-message pending" aria-live="polite">{pendingQuestion}</div><div className="assistant-message assistant-loading" role="status" aria-live="polite"><span>✦</span><div><span className="mini-spinner" aria-hidden="true" /><p>L'assistant réfléchit et consulte les outils nécessaires…</p></div></div></>}
+                    {!conversationLoading && !pendingQuestion && activeConversation?.messages.length === 0 && <p className="empty-hint">Cette conversation est vide. Demandez une recherche, une synthèse ou une action sur le projet.</p>}
                   </div>
                   {assistantError && <div className="error-result"><p>{assistantError}</p></div>}
                   <form className="chat-composer" onSubmit={ask}>
-                    <label className="assistant-permission"><input type="checkbox" checked={allowAssistantActions} onChange={(event) => setAllowAssistantActions(event.target.checked)} /><span>Autoriser les changements de catégories, liens et mémoire pour ce message. Les fichiers demanderont une confirmation séparée.</span></label>
+                    <label className="assistant-permission"><input type="checkbox" checked={allowAssistantActions} onChange={(event) => setAllowAssistantActions(event.target.checked)} /><span>Autoriser les changements de catégories, liens et mémoire. Les fichiers restent en brouillon jusqu'à validation.</span></label>
                     <textarea value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Posez une question ou demandez une action…" minLength={3} maxLength={4000} required />
                     <button className="primary-button" disabled={assistantSending || conversationLoading}>{assistantSending ? "…" : "Envoyer"}</button>
                   </form>

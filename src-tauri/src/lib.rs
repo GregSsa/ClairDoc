@@ -1380,6 +1380,42 @@ async fn apply_local_assistant_action(
 }
 
 #[tauri::command]
+async fn get_project_draft(
+    app: AppHandle,
+    project_id: String,
+) -> Result<serde_json::Value, String> {
+    let config = read_server_config(&app)?;
+    let response = api_client(Duration::from_secs(30))?
+        .get(format!(
+            "{}/api/v1/projects/{project_id}/draft",
+            config.server_url
+        ))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .send()
+        .await
+        .map_err(|error| format!("Brouillon inaccessible : {error}"))?;
+    parse_api_response(response).await
+}
+
+#[tauri::command]
+async fn cancel_local_assistant_action(
+    app: AppHandle,
+    project_id: String,
+    conversation_id: String,
+    action_id: String,
+) -> Result<AssistantActionResponse, String> {
+    let config = read_server_config(&app)?;
+    let response = api_client(Duration::from_secs(30))?
+        .delete(format!(
+            "{}/api/v1/projects/{project_id}/conversations/{conversation_id}/local-actions/{action_id}",
+            config.server_url
+        ))
+        .header("X-ClairDoc-Key", &config.api_key)
+        .send().await.map_err(|error| format!("Retrait du brouillon impossible : {error}"))?;
+    parse_api_response(response).await
+}
+
+#[tauri::command]
 async fn create_organization_plan(
     app: AppHandle,
     project_id: String,
@@ -1939,6 +1975,8 @@ pub fn run() {
             delete_conversation,
             send_conversation_message,
             apply_local_assistant_action,
+            get_project_draft,
+            cancel_local_assistant_action,
             list_document_files,
             create_organization_plan,
             apply_organization_plan,

@@ -169,11 +169,27 @@ export type AskResult = {
 export type AssistantAction = {
   id?: string;
   tool: string;
-  status: "completed" | "failed" | "confirmation_required" | "pending_local";
+  status: "completed" | "failed" | "confirmation_required" | "pending_local" | "cancelled" | "validation_requested";
   summary: string;
   arguments?: Record<string, string>;
   sourceRelativePath?: string;
   expectedSha256?: string;
+};
+
+export type DraftAction = {
+  id: string;
+  conversation_id: string;
+  job_id: string;
+  tool: "copy_document" | "move_document" | "rename_document" | "delete_document";
+  summary: string;
+  source_relative_path: string;
+  destination_relative_path: string | null;
+  expected_sha256: string;
+};
+
+export type ProjectDraft = {
+  project_id: string;
+  actions: DraftAction[];
 };
 
 export type ConversationSummary = {
@@ -367,6 +383,14 @@ export function sendConversationMessage(
 
 export function applyLocalAssistantAction(projectId: string, conversationId: string, actionId: string) {
   return invoke<AssistantAction>("apply_local_assistant_action", { projectId, conversationId, actionId });
+}
+
+export function getProjectDraft(projectId: string) {
+  return invoke<ProjectDraft>("get_project_draft", { projectId });
+}
+
+export function cancelDraftAction(projectId: string, conversationId: string, actionId: string) {
+  return invoke<AssistantAction>("cancel_local_assistant_action", { projectId, conversationId, actionId });
 }
 
 export function createOrganizationPlan(projectId: string, renameFiles = false) {

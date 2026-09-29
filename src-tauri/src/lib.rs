@@ -10,6 +10,8 @@ use std::{
 };
 use tauri::{AppHandle, Manager};
 
+mod local_mode;
+
 const CONFIG_FILE_NAME: &str = "server-config.json";
 
 #[derive(Deserialize, Serialize)]
@@ -1998,6 +2000,19 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
+            local_mode::local_status,
+            local_mode::local_set_openai_key,
+            local_mode::local_set_model,
+            local_mode::local_list_projects,
+            local_mode::local_create_project,
+            local_mode::local_update_project,
+            local_mode::local_delete_project,
+            local_mode::local_search_documents,
+            local_mode::local_list_conversations,
+            local_mode::local_create_conversation,
+            local_mode::local_get_conversation,
+            local_mode::local_delete_conversation,
+            local_mode::local_send_message,
             scan_folder,
             get_server_config,
             configure_server,

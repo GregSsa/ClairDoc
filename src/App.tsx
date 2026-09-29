@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import ProjectExplorer from "./ProjectExplorer";
 import DocumentSearch from "./DocumentSearch";
+import LocalApp from "./LocalApp";
 import {
   applyLocalAssistantAction,
   applyOrganizationPlan,
@@ -599,7 +600,7 @@ function App() {
   }
 
   async function retestServer() {
-    setConnection({ status: "testing" });
+    if (connected) setConnection({ status: "testing" });
     try {
       const result = await testServerConnection();
       setConnection({ status: "connected", version: result.version });
@@ -1102,6 +1103,10 @@ function App() {
     }, {}),
   ).sort(([left], [right]) => left.localeCompare(right, "fr"));
 
+  if (connection.status === "missing" || connection.status === "error") {
+    return <LocalApp serverUrl={serverUrl} onRetryServer={retestServer} />;
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar" aria-label="Navigation principale">
@@ -1271,7 +1276,6 @@ function App() {
           </div>
           <div className="server-readonly"><div><span>Adresse configurée</span><strong>{serverUrl}</strong></div><button className="secondary-button small-button" type="button" disabled={connection.status === "testing"} onClick={retestServer}>{connection.status === "testing" ? "Test…" : "Tester la connexion"}</button></div>
           <div className="server-feedback" aria-live="polite">
-            {connection.status === "error" && <p className="inline-error">{connection.message}</p>}
             {connected && (
               <div className="backup-controls">
                 <p>Clé validée. Les documents peuvent être envoyés au serveur OCR.</p>

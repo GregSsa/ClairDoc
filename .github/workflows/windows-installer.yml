@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - .github/workflows/windows-installer.yml
+      - src-tauri/tauri.conf.json
 
 permissions:
   contents: write

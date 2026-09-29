@@ -4,6 +4,9 @@ import { open } from "@tauri-apps/plugin-dialog";
 import ProjectExplorer from "./ProjectExplorer";
 import DocumentSearch from "./DocumentSearch";
 import LocalApp from "./LocalApp";
+import FolderIcon from "./FolderIcon";
+import ConversationDetails from "./ConversationDetails";
+import { useConversationAutoscroll } from "./useConversationAutoscroll";
 import {
   applyLocalAssistantAction,
   applyOrganizationPlan,
@@ -164,14 +167,6 @@ function formatNumber(value: number) {
   return new Intl.NumberFormat("fr-FR").format(value);
 }
 
-function FolderIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M3.75 5.75c0-1.1.9-2 2-2h3.1c.58 0 1.13.25 1.51.69l1.2 1.37c.19.22.46.34.75.34h5.94c1.1 0 2 .9 2 2v8.1a3 3 0 0 1-3 3H6.75a3 3 0 0 1-3-3V5.75Z" />
-    </svg>
-  );
-}
-
 function ShieldIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -226,6 +221,7 @@ function App() {
   const [assistantError, setAssistantError] = useState("");
   const [allowAssistantActions, setAllowAssistantActions] = useState(() => localStorage.getItem("clairdoc-allow-metadata-actions") === "true");
   const [sourceAccess, setSourceAccess] = useState<{ accessible: boolean; reason: string } | null>(null);
+  const conversationRef = useConversationAutoscroll(activeConversation?.id, activeConversation?.messages.length ?? 0, !!pendingQuestion, activeView === "assistant");
   const connected = connection.status === "connected";
 
   useEffect(() => {
@@ -1248,10 +1244,10 @@ function App() {
                   {rag.status === "indexing" && <div className="ocr-progress"><span className="mini-spinner" /> Préparation de l’assistant…</div>}
                   {rag.status === "error" && <div className="error-result"><p>{rag.message}</p>{rag.task && <button className="secondary-button" onClick={retryIndex}>Relancer</button>}</div>}
                   {conversationLoading && <div className="ocr-progress"><span className="mini-spinner" /> Chargement de la conversation…</div>}
-                  <div className="conversation">
+                  <div className="conversation" ref={conversationRef}>
                     {activeConversation?.messages.map((message) => message.role === "user"
                       ? <div className="user-message" key={message.id}>{message.content}</div>
-                      : <div className="assistant-message" key={message.id}><span>✦</span><div><Suspense fallback={<p>Affichage de la réponse…</p>}><MarkdownAnswer content={message.content} /></Suspense>{message.actions.length > 0 && <div className="action-list">{message.actions.map((action, index) => <span className={action.status} key={`${message.id}-${index}`}>{action.summary}</span>)}</div>}<div className="source-list">{message.citations.map((citation, index) => <button type="button" key={`${citation.job_id}-${citation.chunk_index}`}><b>[{index + 1}] {citation.document_name}</b><small>{citation.page_number ? `Page ${citation.page_number} · ` : ""}{citation.excerpt}</small></button>)}</div></div></div>)}
+                      : <div className="assistant-message" key={message.id}><span>✦</span><div><Suspense fallback={<p>Affichage de la réponse…</p>}><MarkdownAnswer content={message.content} /></Suspense><ConversationDetails actions={message.actions} citations={message.citations} /></div></div>)}
                     {pendingQuestion && <><div className="user-message pending" aria-live="polite">{pendingQuestion}</div><div className="assistant-message assistant-loading" role="status" aria-live="polite"><span>✦</span><div><span className="mini-spinner" aria-hidden="true" /><p>L'assistant réfléchit et consulte les outils nécessaires…</p></div></div></>}
                     {!conversationLoading && !pendingQuestion && activeConversation?.messages.length === 0 && <p className="empty-hint">Cette conversation est vide. Demandez une recherche, une synthèse ou une action sur le projet.</p>}
                   </div>

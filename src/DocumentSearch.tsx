@@ -10,9 +10,11 @@ import {
 type Props = {
   project: RemoteProject;
   runtimeInfo: RuntimeInfo | null;
+  searchDocuments?: (projectId: string, query: string, mode: "local" | "ai", limit: number) => Promise<DocumentSearchResult>;
+  standalone?: boolean;
 };
 
-export default function DocumentSearch({ project, runtimeInfo }: Props) {
+export default function DocumentSearch({ project, runtimeInfo, searchDocuments = searchProjectDocuments, standalone = false }: Props) {
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<"local" | "ai">("local");
   const [limit, setLimit] = useState(10);
@@ -30,7 +32,7 @@ export default function DocumentSearch({ project, runtimeInfo }: Props) {
     setError("");
     setResult(null);
     try {
-      const response = await searchProjectDocuments(project.id, trimmed, mode, limit);
+      const response = await searchDocuments(project.id, trimmed, mode, limit);
       if (id === searchId.current) setResult(response);
     } catch (failure) {
       if (id === searchId.current) setError(typeof failure === "string" ? failure : "La recherche a échoué.");
@@ -77,7 +79,7 @@ export default function DocumentSearch({ project, runtimeInfo }: Props) {
         </div>
         <p className="search-explanation">
           {mode === "local"
-            ? `Classement par noms, contenu et similarité des embeddings. ${runtimeInfo?.embeddingProvider === "openai" ? "L’encodage de votre requête utilise l’API OpenAI, sans modèle conversationnel." : "Avec un index local, aucun appel à OpenAI n’est nécessaire."}`
+            ? `Classement par noms, contenu et similarité des embeddings. ${standalone || runtimeInfo?.embeddingProvider === "openai" ? "L’encodage de votre requête utilise l’API OpenAI, sans modèle conversationnel." : "Avec un index local, aucun appel à OpenAI n’est nécessaire."}`
             : "OpenAI trie les extraits candidats. Seuls les noms des documents et leurs passages indexés sont renvoyés ; l’IA ne rédige pas de réponse."}
         </p>
       </form>

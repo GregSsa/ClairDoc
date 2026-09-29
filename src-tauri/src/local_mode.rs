@@ -8,7 +8,7 @@ use std::{
 };
 use tauri::{AppHandle, Manager};
 
-use crate::{api_client, list_document_files};
+use crate::{api_client, list_document_files, supported_document_extension};
 
 pub mod actions;
 pub mod index;
@@ -96,6 +96,98 @@ pub struct LocalStatus {
 pub struct LocalAnswer {
     answer: String,
     model: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalImportResult {
+    copied: usize,
+    skipped: usize,
+}
+
+#[tauri::command]
+pub fn local_import_files(
+    app: AppHandle,
+    project_id: String,
+    paths: Vec<String>,
+) -> Result<LocalImportResult, String> {
+    if paths.is_empty() || paths.len() > 500 {
+        return Err("Sélectionnez entre 1 et 500 fichiers à la fois.".to_string());
+    }
+    let root = index::source_root(&app, &project_id)?;
+    let destination_dir = root.join("Ajouts");
+    let mut copied = 0;
+    let mut skipped = 0;
+    for selected in paths {
+        let source = PathBuf::from(selected)
+            .canonicalize()
+            .map_err(|error| format!("Fichier source inaccessible : {error}"))?;
+        if !source.is_file() || source.starts_with(&root) {
+            skipped += 1;
+            continue;
+        }
+        let Some(name) = source.file_name() else {
+            skipped += 1;
+            continue;
+        };
+        let supported = source
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(supported_document_extension);
+        if !supported {
+            skipped += 1;
+            continue;
+        }
+        fs::create_dir_all(&destination_dir)
+            .map_err(|error| format!("Création du dossier Ajouts impossible : {error}"))?;
+        let checked_dir = destination_dir
+            .canonicalize()
+            .map_err(|error| format!("Dossier Ajouts inaccessible : {error}"))?;
+        if !checked_dir.starts_with(&root) {
+            return Err("Le dossier Ajouts sort du projet.".to_string());
+        }
+        let name = name.to_string_lossy();
+        let stem = Path::new(name.as_ref())
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("document");
+        let extension = source
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
+        let mut destination = checked_dir.join(name.as_ref());
+        let mut target = None;
+        for suffix in 1..10000 {
+            if suffix > 1 {
+                destination = checked_dir.join(format!("{stem}_{suffix}.{extension}"));
+            }
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&destination)
+            {
+                Ok(file) => {
+                    target = Some(file);
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(format!("Création de la copie impossible : {error}")),
+            }
+        }
+        let mut target = target.ok_or("Trop de fichiers portent déjà ce nom.")?;
+        let copy_result = (|| -> Result<(), std::io::Error> {
+            let mut input = fs::File::open(&source)?;
+            std::io::copy(&mut input, &mut target)?;
+            target.sync_all()
+        })();
+        if let Err(error) = copy_result {
+            drop(target);
+            let _ = fs::remove_file(&destination);
+            return Err(format!("Copie interrompue : {error}"));
+        }
+        copied += 1;
+    }
+    Ok(LocalImportResult { copied, skipped })
 }
 
 #[derive(Deserialize)]
@@ -676,6 +768,7 @@ pub async fn local_send_message(
     if pdf.is_some() {
         context.push_str("\nLe PDF joint est le seul document dont tu peux examiner le contenu dans cette réponse.");
     }
+    let attached_pdf_name = pdf.as_ref().map(|(name, _)| name.clone());
     let mut input: Vec<serde_json::Value> = history
         .iter()
         .rev()
@@ -762,13 +855,41 @@ pub async fn local_send_message(
     if conversation.messages.is_empty() {
         conversation.title = question.chars().take(60).collect();
     }
+    let mut consulted = retrieved
+        .iter()
+        .map(|item| {
+            serde_json::json!({
+                "document_name": item.document_name,
+                "job_id": item.job_id,
+                "chunk_index": 0,
+                "page_number": null,
+                "score": 0.0,
+                "excerpt": item.passages.first().map(|passage| passage.text.as_str()).unwrap_or("")
+            })
+        })
+        .collect::<Vec<_>>();
+    if let Some(filename) = attached_pdf_name {
+        if !retrieved
+            .iter()
+            .any(|item| item.document_name.eq_ignore_ascii_case(&filename))
+        {
+            consulted.push(serde_json::json!({
+                "document_name": filename.clone(),
+                "job_id": format!("direct:{filename}"),
+                "chunk_index": 0,
+                "page_number": null,
+                "score": 0.0,
+                "excerpt": "PDF joint directement à cette question."
+            }));
+        }
+    }
     for (role, text) in [("user", question), ("assistant", answer.clone())] {
         conversation.messages.push(LocalMessage {
             id: new_id(),
             role: role.to_string(),
             content: text,
             created_at: now(),
-            citations: Vec::new(),
+            citations: if role == "assistant" { consulted.clone() } else { Vec::new() },
             actions: if role == "assistant" { accepted.iter().map(|action| serde_json::json!({"id":action.id,"tool":action.tool,"status":"pending_local","summary":action.summary})).collect() } else { Vec::new() },
         });
     }

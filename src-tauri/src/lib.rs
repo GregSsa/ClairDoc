@@ -2060,6 +2060,7 @@ pub fn run() {
             local_mode::local_get_conversation,
             local_mode::local_delete_conversation,
             local_mode::local_send_message,
+            local_mode::local_import_files,
             local_mode::index::local_catalog_project,
             local_mode::index::local_list_library,
             local_mode::index::local_analyze_document,

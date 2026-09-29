@@ -100,6 +100,7 @@ export type LibraryDocument = {
   name: string;
   sourceRelativePath: string;
   status: "ready" | "indexed" | "indexed_name";
+  analyzed?: boolean;
   textWarning: string | null;
   category: string;
   documentDate: string | null;

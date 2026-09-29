@@ -1411,6 +1411,16 @@ async fn apply_local_assistant_action(
     let root = project
         .source_root
         .ok_or("Ce projet n'a pas de dossier local.")?;
+    let draft = get_project_draft(app.clone(), project_id.clone()).await?;
+    let first_action_id = draft
+        .get("actions")
+        .and_then(|actions| actions.as_array())
+        .and_then(|actions| actions.first())
+        .and_then(|action| action.get("id"))
+        .and_then(|id| id.as_str());
+    if first_action_id != Some(action_id.as_str()) {
+        return Err("Appliquez les actions du brouillon dans l'ordre proposé.".to_string());
+    }
     let conversation =
         get_conversation(app.clone(), project_id.clone(), conversation_id.clone()).await?;
     let action = conversation
@@ -2180,6 +2190,53 @@ mod tests {
         );
         assert!(perform_local_file_action(root.to_str().expect("path"), &action).is_err());
         assert!(source.is_file());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_assistant_applies_chained_actions_to_same_file() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("clairdoc-local-chain-{unique}"));
+        fs::create_dir_all(&root).expect("root");
+        let source = root.join("note.txt");
+        fs::write(&source, b"original").expect("source");
+        let hash = sha256_file(&source).expect("hash");
+        let steps = [
+            local_action(
+                "rename_document",
+                "note.txt",
+                serde_json::json!({"new_name":"memo.txt"}),
+                hash.clone(),
+            ),
+            local_action(
+                "move_document",
+                "memo.txt",
+                serde_json::json!({"destination":"archives/memo.txt"}),
+                hash.clone(),
+            ),
+            local_action(
+                "copy_document",
+                "archives/memo.txt",
+                serde_json::json!({"destination":"copies/memo.txt"}),
+                hash,
+            ),
+        ];
+        for step in &steps {
+            perform_local_file_action(root.to_str().expect("path"), step).expect("step");
+        }
+        assert!(!source.exists());
+        assert!(!root.join("memo.txt").exists());
+        assert_eq!(
+            fs::read(root.join("archives/memo.txt")).expect("moved"),
+            b"original"
+        );
+        assert_eq!(
+            fs::read(root.join("copies/memo.txt")).expect("copied"),
+            b"original"
+        );
         let _ = fs::remove_dir_all(root);
     }
 

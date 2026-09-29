@@ -47,12 +47,16 @@ type Props = {
 
 const EMPTY_DRAFT_ACTIONS: DraftAction[] = [];
 
-function plannedEntries(actions: DraftAction[], path: string): ProjectDirectoryEntry[] {
+function plannedEntries(
+  documents: LibraryDocument[],
+  originalPaths: Set<string>,
+  path: string,
+): ProjectDirectoryEntry[] {
   const prefix = path ? `${path}/` : "";
   const entries = new Map<string, ProjectDirectoryEntry>();
-  for (const action of actions) {
-    const destination = action.destination_relative_path;
-    if (!destination?.startsWith(prefix)) continue;
+  for (const document of documents) {
+    const destination = document.sourceRelativePath;
+    if (originalPaths.has(destination) || !destination.startsWith(prefix)) continue;
     const remainder = destination.slice(prefix.length);
     const separator = remainder.indexOf("/");
     const name = separator < 0 ? remainder : remainder.slice(0, separator);
@@ -105,6 +109,15 @@ export default function ProjectExplorer({ projectName, rootPath, library, draft,
   const [resultLimit, setResultLimit] = useState(PAGE_SIZE);
   const [draftLimit, setDraftLimit] = useState(30);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const originalPaths = useMemo(
+    () => new Set(documents.map((document) => document.sourceRelativePath)),
+    [documents],
+  );
+  const lastPendingActionIds = useMemo(() => {
+    const lastByJob = new Map<string, string>();
+    for (const action of draftActions) lastByJob.set(action.job_id, action.id);
+    return new Set(lastByJob.values());
+  }, [draftActions]);
 
   const previewDocuments = useMemo(() => {
     const actionsByJob = new Map<string, DraftAction[]>();
@@ -116,16 +129,18 @@ export default function ProjectExplorer({ projectName, rootPath, library, draft,
     const result: LibraryDocument[] = [];
     for (const document of documents) {
       const actions = actionsByJob.get(document.jobId) ?? [];
-      const destructive = actions.find((action) => action.tool !== "copy_document");
-      if (!destructive) result.push(document);
-      if (destructive?.destination_relative_path) {
-        result.push({ ...document, name: destructive.destination_relative_path.slice(destructive.destination_relative_path.lastIndexOf("/") + 1), sourceRelativePath: destructive.destination_relative_path });
-      }
+      let currentPath: string | null = document.sourceRelativePath;
       for (const action of actions) {
         if (action.tool === "copy_document" && action.destination_relative_path) {
-          result.push({ ...document, name: action.destination_relative_path.slice(action.destination_relative_path.lastIndexOf("/") + 1), sourceRelativePath: action.destination_relative_path });
+          const destination = action.destination_relative_path;
+          result.push({ ...document, name: destination.slice(destination.lastIndexOf("/") + 1), sourceRelativePath: destination });
+        } else if (action.tool === "delete_document") {
+          currentPath = null;
+        } else if (action.destination_relative_path) {
+          currentPath = action.destination_relative_path;
         }
       }
+      if (currentPath) result.push({ ...document, name: currentPath.slice(currentPath.lastIndexOf("/") + 1), sourceRelativePath: currentPath });
     }
     return result;
   }, [documents, draftActions]);
@@ -164,16 +179,17 @@ export default function ProjectExplorer({ projectName, rootPath, library, draft,
     return counts;
   }, [previewDocuments, path]);
   const displayedEntries = useMemo(() => {
-    const hidden = new Set(draftActions.filter((action) => action.tool === "move_document" || action.tool === "rename_document" || action.tool === "delete_document").map((action) => action.source_relative_path));
+    const finalPaths = new Set(previewDocuments.map((document) => document.sourceRelativePath));
+    const hidden = new Set([...originalPaths].filter((original) => !finalPaths.has(original)));
     const entries = (directory?.entries ?? []).filter((entry) => !hidden.has(entry.relativePath));
     const known = new Set(entries.map((entry) => entry.relativePath));
-    for (const entry of plannedEntries(draftActions, path)) {
+    for (const entry of plannedEntries(previewDocuments, originalPaths, path)) {
       if (!known.has(entry.relativePath)) entries.push(entry);
     }
     return entries.sort((left, right) => Number(right.kind === "directory") - Number(left.kind === "directory") || left.name.localeCompare(right.name, "fr", { sensitivity: "base" }));
-  }, [directory, draftActions, path]);
-  const plannedPaths = useMemo(() => new Set(draftActions.map((action) => action.destination_relative_path).filter((value): value is string => !!value)), [draftActions]);
-  const plannedFolders = useMemo(() => [...new Set(draftActions.map((action) => action.destination_relative_path ? parentPath(action.destination_relative_path) : "").filter(Boolean))].sort((a, b) => a.localeCompare(b, "fr")), [draftActions]);
+  }, [directory, originalPaths, previewDocuments, path]);
+  const plannedPaths = useMemo(() => new Set(previewDocuments.map((document) => document.sourceRelativePath).filter((value) => !originalPaths.has(value))), [originalPaths, previewDocuments]);
+  const plannedFolders = useMemo(() => [...new Set([...plannedPaths].map(parentPath).filter(Boolean))].sort((a, b) => a.localeCompare(b, "fr")), [plannedPaths]);
   const plannedDirectoryPaths = useMemo(() => {
     const paths = new Set<string>();
     for (const folder of plannedFolders) {
@@ -300,7 +316,7 @@ export default function ProjectExplorer({ projectName, rootPath, library, draft,
         <button type="button" className="explorer-refresh" onClick={() => setRefresh((value) => value + 1)}>Actualiser</button>
       </div>
       {!localAvailable && !loading && <p className="explorer-notice">{plannedDirectoryPaths.has(path) ? "Ce dossier fait partie du brouillon : il sera créé lors de la validation." : "Le dossier local n'est pas accessible sur ce PC. Affichage des documents déjà importés ; les dossiers vides et les fichiers non importés ne sont pas visibles."}</p>}
-      {draftActions.length > 0 && <section className="explorer-draft" aria-label="Brouillon des modifications"><div className="explorer-draft-heading"><div><span className="explorer-draft-kicker">APERÇU · RIEN N'EST ENCORE MODIFIÉ</span><h2>{draftActions.length} modification(s) prévues</h2><p>Les nouveaux chemins apparaissent dans l'arbre ci-dessous. Vérifiez-les avant d'appliquer le brouillon au dossier du PC.</p></div><button type="button" disabled={!!draftApplying} onClick={onApplyDraft}>{draftApplying ? `Application ${draftApplying.current}/${draftApplying.total}…` : "Valider le brouillon"}</button></div>{plannedFolders.length > 0 && <div className="explorer-draft-folders"><strong>Dossiers de destination</strong><div>{plannedFolders.slice(0, 20).map((folder) => <button type="button" key={folder} onClick={() => navigate(folder)}>▰ {folder}</button>)}{plannedFolders.length > 20 && <small>+ {plannedFolders.length - 20} autre(s) dossier(s)</small>}</div></div>}<div className="explorer-draft-list">{draftActions.slice(0, draftLimit).map((action) => <div className="explorer-draft-action" key={action.id}><span><strong>{action.tool === "copy_document" ? "Copier" : action.tool === "move_document" ? "Déplacer" : action.tool === "rename_document" ? "Renommer" : "Corbeille"}</strong><small>{action.source_relative_path}{action.destination_relative_path ? ` → ${action.destination_relative_path}` : " → .clairdoc/trash"}</small></span><button type="button" disabled={!!draftApplying} onClick={() => onRemoveDraftItem(action.conversation_id, action.id)}>Retirer</button></div>)}{draftActions.length > draftLimit && <button type="button" className="explorer-draft-more" onClick={() => setDraftLimit((value) => value + 30)}>Afficher davantage</button>}</div></section>}
+      {draftActions.length > 0 && <section className="explorer-draft" aria-label="Brouillon des modifications"><div className="explorer-draft-heading"><div><span className="explorer-draft-kicker">APERÇU · RIEN N'EST ENCORE MODIFIÉ</span><h2>{draftActions.length} modification(s) prévues</h2><p>Les nouveaux chemins apparaissent dans l'arbre ci-dessous. Vérifiez-les avant d'appliquer le brouillon au dossier du PC. Les étapes d'un même fichier seront appliquées dans l'ordre.</p></div><button type="button" disabled={!!draftApplying} onClick={onApplyDraft}>{draftApplying ? `Application ${draftApplying.current}/${draftApplying.total}…` : "Valider le brouillon"}</button></div>{plannedFolders.length > 0 && <div className="explorer-draft-folders"><strong>Dossiers de destination</strong><div>{plannedFolders.slice(0, 20).map((folder) => <button type="button" key={folder} onClick={() => navigate(folder)}>▰ {folder}</button>)}{plannedFolders.length > 20 && <small>+ {plannedFolders.length - 20} autre(s) dossier(s)</small>}</div></div>}<div className="explorer-draft-list">{draftActions.slice(0, draftLimit).map((action) => <div className="explorer-draft-action" key={action.id}><span><strong>{action.tool === "copy_document" ? "Copier" : action.tool === "move_document" ? "Déplacer" : action.tool === "rename_document" ? "Renommer" : "Corbeille"}</strong><small>{action.source_relative_path}{action.destination_relative_path ? ` → ${action.destination_relative_path}` : " → .clairdoc/trash"}</small></span><button type="button" disabled={!!draftApplying || !lastPendingActionIds.has(action.id)} title={lastPendingActionIds.has(action.id) ? "Retirer cette étape" : "Retirez d'abord les étapes suivantes de ce fichier"} onClick={() => onRemoveDraftItem(action.conversation_id, action.id)}>Retirer</button></div>)}{draftActions.length > draftLimit && <button type="button" className="explorer-draft-more" onClick={() => setDraftLimit((value) => value + 30)}>Afficher davantage</button>}</div></section>}
       {draftError && <p className="explorer-error" role="alert">{draftError}</p>}
       {draftNotice && <p className="explorer-notice" role="status">{draftNotice}</p>}
       <div className="explorer-toolbar">

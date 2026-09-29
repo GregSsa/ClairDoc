@@ -178,6 +178,14 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px
 .source-list button { padding: 10px; display: grid; gap: 3px; border: 1px solid #e0e7e4; border-radius: 10px; color: #405b54; background: #fafcfa; text-align: left; }
 .source-list small { color: #7b8985; }
 .conversation-details { display: grid; gap: 8px; margin-top: 12px; }
+.offline-sync-panel { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 18px; margin: 18px 0; padding: 16px; border: 1px solid #d5e5dc; border-radius: 14px; background: #f2f8f4; }
+.offline-sync-panel > div { flex: 1 1 320px; }
+.offline-sync-panel strong { color: #285241; }
+.offline-sync-panel p { margin: 5px 0 0; color: #5c7468; font-size: 13px; }
+.offline-sync-panel > p { flex-basis: 100%; }
+[data-theme="dark"] .offline-sync-panel { border-color: #3f5b49; background: #1e3527; }
+[data-theme="dark"] .offline-sync-panel strong { color: #def2e3; }
+[data-theme="dark"] .offline-sync-panel p { color: #b5cabb; }
 .conversation-detail { border: 1px solid #e0e7e4; border-radius: 10px; background: #fafcfa; }
 .conversation-detail summary { padding: 9px 11px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #405b54; font-size: 13px; font-weight: 700; cursor: pointer; list-style: none; }
 .conversation-detail summary::-webkit-details-marker { display: none; }

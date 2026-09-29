@@ -12,6 +12,7 @@ use crate::{api_client, list_document_files, supported_document_extension};
 
 pub mod actions;
 pub mod index;
+pub mod offline;
 
 static STORE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 const MODEL_OPTIONS: [&str; 3] = ["gpt-6-luna", "gpt-5.6-terra", "gpt-6-sol"];
@@ -28,6 +29,10 @@ pub struct LocalProject {
     id: String,
     name: String,
     source_root: Option<String>,
+    #[serde(default)]
+    server_project_id: Option<String>,
+    #[serde(default)]
+    embedding_provider: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -364,6 +369,8 @@ pub fn local_create_project(
         id: new_id(),
         name: name.to_string(),
         source_root: root,
+        server_project_id: None,
+        embedding_provider: None,
     };
     state.projects.push(created.clone());
     write_json(&path, &state)?;
@@ -687,16 +694,8 @@ pub async fn local_send_message(
         Some(root) => matching_documents(root, &question)?,
         None => (String::new(), None),
     };
-    let retrieved = if project.source_root.is_some() {
-        index::ranked(&app, &project_id, &question, 8).await?
-    } else {
-        Vec::new()
-    };
-    let indexed = if project.source_root.is_some() {
-        index::documents(&app, &project_id)?
-    } else {
-        Vec::new()
-    };
+    let retrieved = index::ranked(&app, &project_id, &question, 8).await?;
+    let indexed = index::documents(&app, &project_id)?;
     let mut candidates = indexed
         .iter()
         .filter(|item| question.to_lowercase().contains(&item.name.to_lowercase()))
@@ -919,6 +918,8 @@ mod tests {
                 id: "test".to_string(),
                 name: "Maison".to_string(),
                 source_root: None,
+                server_project_id: None,
+                embedding_provider: None,
             }],
             conversations: Vec::new(),
         };

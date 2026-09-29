@@ -1,5 +1,6 @@
 import { FormEvent, Suspense, lazy, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import ProjectExplorer from "./ProjectExplorer";
 import DocumentSearch from "./DocumentSearch";
@@ -189,6 +190,7 @@ function App() {
   const [organization, setOrganization] = useState<OrganizationState>({ status: "idle" });
   const [selectedPlanEntries, setSelectedPlanEntries] = useState<string[]>([]);
   const [backup, setBackup] = useState<BackupState>({ status: "idle" });
+  const [offlineSync, setOfflineSync] = useState<{ status: "idle" | "running" | "done" | "error"; message: string }>({ status: "idle", message: "" });
   const [activeView, setActiveView] = useState<WorkspaceView>("home");
   const [newProjectName, setNewProjectName] = useState("");
   const [library, setLibrary] = useState<LibraryState>({ status: "idle" });
@@ -223,6 +225,20 @@ function App() {
   const [sourceAccess, setSourceAccess] = useState<{ accessible: boolean; reason: string } | null>(null);
   const conversationRef = useConversationAutoscroll(activeConversation?.id, activeConversation?.messages.length ?? 0, !!pendingQuestion, activeView === "assistant");
   const connected = connection.status === "connected";
+
+  useEffect(() => {
+    if (project.status !== "ready") return;
+    const projectId = project.project.id;
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void listen<{ projectId: string; imported: number; total: number; stage: "transfer" | "model" }>("offline-sync-progress", (event) => {
+      if (!active || event.payload.projectId !== projectId) return;
+      setOfflineSync((current) => current.status === "running"
+        ? { status: "running", message: event.payload.stage === "model" ? "Préparation du modèle local sur cet ordinateur…" : `Copie de l’index : ${event.payload.imported}/${event.payload.total} document(s)…` }
+        : current);
+    }).then((remove) => { if (active) unlisten = remove; else remove(); });
+    return () => { active = false; unlisten?.(); };
+  }, [project]);
 
   useEffect(() => {
     let active = true;
@@ -482,6 +498,7 @@ function App() {
     setProject(selected ? { status: "ready", project: selected } : { status: "idle" });
     setBatch({ status: "idle" });
     setRag({ status: "idle" });
+    setOfflineSync({ status: "idle", message: "" });
     setOrganization({ status: "idle" });
     setLibrary({ status: "idle" });
     setQuestion("");
@@ -810,6 +827,17 @@ function App() {
       setBackup({ status: "saved", path: result.path, size: result.sizeBytes });
     } catch (error) {
       setBackup({ status: "error", message: errorMessage(error, "La sauvegarde a échoué.") });
+    }
+  }
+
+  async function syncOfflineIndex() {
+    if (project.status !== "ready" || offlineSync.status === "running") return;
+    setOfflineSync({ status: "running", message: "Transfert de l’index et préparation du modèle…" });
+    try {
+      const result = await invoke<{ documents: number; embeddingProvider: string }>("sync_project_offline", { projectId: project.project.id });
+      setOfflineSync({ status: "done", message: `${result.documents} document(s) disponibles pour la recherche sans serveur. ${result.embeddingProvider === "local" ? "Le modèle de recherche est aussi conservé sur cet ordinateur." : "Une clé OpenAI reste nécessaire pour encoder les recherches."}` });
+    } catch (error) {
+      setOfflineSync({ status: "error", message: errorMessage(error, "La copie hors connexion a échoué.") });
     }
   }
 
@@ -1430,6 +1458,7 @@ function App() {
                     )}
                     {rag.status === "indexing" && <div className="ocr-progress"><span className="mini-spinner" /> Indexation persistante en arrière-plan · {rag.task.status === "queued" ? "en attente" : "récupération OCR et embeddings en cours"}…</div>}
                     {rag.status === "error" && <div className="ocr-result error-result"><p>{rag.message}</p>{rag.task && <button className="secondary-button" onClick={retryIndex}>Relancer l’indexation</button>}</div>}
+                    <div className="offline-sync-panel"><div><strong>Recherche sans serveur</strong><p>Après l’indexation, copiez les passages, métadonnées et vecteurs sur cet ordinateur. Les fichiers originaux ne sont pas copiés.</p></div><button type="button" className="secondary-button" disabled={offlineSync.status === "running" || rag.status === "indexing"} onClick={() => void syncOfflineIndex()}>{offlineSync.status === "running" ? "Préparation…" : "Rendre disponible hors connexion"}</button>{offlineSync.status !== "idle" && <p className={offlineSync.status === "error" ? "inline-error" : ""} role="status">{offlineSync.message}</p>}</div>
                     {indexResult && (
                       <>
                         <p className="index-summary">{indexResult.chunksIndexed} extraits prêts · {indexResult.documentsIndexed} document(s) indexé(s) · {indexResult.documentsReused} réutilisé(s) · {indexResult.documentsNameOnly ?? 0} indexé(s) par nom uniquement</p>

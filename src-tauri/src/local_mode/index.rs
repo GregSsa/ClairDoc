@@ -4,12 +4,14 @@ use super::{
 };
 use crate::{api_client, list_document_files, safe_relative_path};
 use base64::{engine::general_purpose::STANDARD, Engine};
+use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, UNIX_EPOCH},
 };
 use tauri::AppHandle;
@@ -18,6 +20,98 @@ const EMBEDDING_MODEL: &str = "text-embedding-3-small";
 const EMBEDDING_DIMENSIONS: usize = 256;
 const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_CHUNKS: usize = 8;
+pub(super) const LOCAL_MODEL: &str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2";
+static LOCAL_EMBEDDER: OnceLock<Mutex<Option<TextEmbedding>>> = OnceLock::new();
+static SEARCH_CACHE: OnceLock<Mutex<HashMap<String, Arc<Vec<IndexedDocument>>>>> = OnceLock::new();
+
+pub(super) fn invalidate_search_cache(project_id: &str) {
+    if let Some(cache) = SEARCH_CACHE.get() {
+        if let Ok(mut entries) = cache.lock() {
+            entries.remove(project_id);
+        }
+    }
+}
+
+fn search_documents(
+    app: &AppHandle,
+    project_id: &str,
+) -> Result<Arc<Vec<IndexedDocument>>, String> {
+    let cache = SEARCH_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(cached) = cache
+        .lock()
+        .map_err(|_| "Cache de recherche indisponible.")?
+        .get(project_id)
+        .cloned()
+    {
+        return Ok(cached);
+    }
+    let loaded = Arc::new(load_documents(&index_dir(app, project_id)?)?);
+    cache
+        .lock()
+        .map_err(|_| "Cache de recherche indisponible.")?
+        .insert(project_id.to_string(), loaded.clone());
+    Ok(loaded)
+}
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+pub(super) struct IndexConfiguration {
+    pub provider: String,
+    pub model: String,
+    pub dimensions: usize,
+}
+
+pub(super) fn config_path(app: &AppHandle, project_id: &str) -> Result<PathBuf, String> {
+    Ok(index_dir(app, project_id)?.join("_config.json"))
+}
+
+pub(super) fn configuration(
+    app: &AppHandle,
+    project_id: &str,
+) -> Result<IndexConfiguration, String> {
+    let path = config_path(app, project_id)?;
+    if path.is_file() {
+        read_json(&path)
+    } else {
+        Ok(IndexConfiguration {
+            provider: "openai".into(),
+            model: EMBEDDING_MODEL.into(),
+            dimensions: EMBEDDING_DIMENSIONS,
+        })
+    }
+}
+
+fn local_embedding(cache: PathBuf, input: String) -> Result<Vec<f32>, String> {
+    let lock = LOCAL_EMBEDDER.get_or_init(|| Mutex::new(None));
+    let mut guard = lock
+        .lock()
+        .map_err(|_| "Modèle local indisponible.".to_string())?;
+    if guard.is_none() {
+        let options = TextInitOptions::new(EmbeddingModel::ParaphraseMLMiniLML12V2)
+            .with_cache_dir(cache)
+            .with_show_download_progress(false)
+            .with_intra_threads(2);
+        *guard = Some(
+            TextEmbedding::try_new(options)
+                .map_err(|error| format!("Chargement du modèle local impossible : {error}"))?,
+        );
+    }
+    guard
+        .as_mut()
+        .unwrap()
+        .embed(vec![input], None)
+        .map_err(|error| format!("Encodage local impossible : {error}"))?
+        .into_iter()
+        .next()
+        .ok_or("Vecteur local vide.".to_string())
+}
+
+pub(super) async fn warm_local_model(app: &AppHandle) -> Result<(), String> {
+    let cache = data_dir(app)?.join("models");
+    tauri::async_runtime::spawn_blocking(move || local_embedding(cache, "clairdoc".into()))
+        .await
+        .map_err(|error| format!("Préparation du modèle interrompue : {error}"))??;
+    Ok(())
+}
 
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,6 +140,8 @@ pub struct IndexedDocument {
 pub struct IndexedChunk {
     pub text: String,
     pub vector: Vec<f32>,
+    #[serde(default)]
+    pub page_number: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -151,11 +247,13 @@ pub(super) fn source_root(app: &AppHandle, project_id: &str) -> Result<PathBuf, 
 
 pub(super) fn index_dir(app: &AppHandle, project_id: &str) -> Result<PathBuf, String> {
     // project_id is first checked against the locally stored project, not used as an arbitrary path.
-    source_root(app, project_id)?;
+    let _guard = state_lock()?;
+    let state: LocalState = read_json(&super::state_path(app)?)?;
+    project(&state, project_id)?;
     Ok(data_dir(app)?.join("local-index").join(project_id))
 }
 
-fn doc_id(relative: &str) -> String {
+pub(super) fn doc_id(relative: &str) -> String {
     format!("{:x}", Sha256::digest(relative.as_bytes()))
 }
 
@@ -183,7 +281,9 @@ fn load_documents(directory: &Path) -> Result<Vec<IndexedDocument>, String> {
     };
     let mut documents = Vec::new();
     for entry in entries.flatten() {
-        if entry.path().extension().and_then(|value| value.to_str()) != Some("json") {
+        if entry.path().file_name().and_then(|value| value.to_str()) == Some("_config.json")
+            || entry.path().extension().and_then(|value| value.to_str()) != Some("json")
+        {
             continue;
         }
         let document: IndexedDocument = read_json(&entry.path())?;
@@ -249,6 +349,7 @@ pub fn local_catalog_project(app: AppHandle, project_id: String) -> Result<Catal
                 .map_err(|error| format!("Index obsolète impossible à retirer : {error}"))?;
         }
     }
+    invalidate_search_cache(&project_id);
     Ok(CatalogResult {
         total: files.len(),
         added,
@@ -373,10 +474,19 @@ async fn openai_json(key: &str, payload: serde_json::Value) -> Result<serde_json
     Ok(body)
 }
 
-async fn embeddings(key: &str, input: Vec<String>) -> Result<Vec<Vec<f32>>, String> {
-    let response = api_client(Duration::from_secs(120))?.post("https://api.openai.com/v1/embeddings")
-        .bearer_auth(key).json(&serde_json::json!({"model":EMBEDDING_MODEL,"dimensions":EMBEDDING_DIMENSIONS,"input":input}))
-        .send().await.map_err(|error| format!("Embeddings OpenAI impossibles : {error}"))?;
+async fn embeddings(
+    key: &str,
+    model: &str,
+    dimensions: usize,
+    input: Vec<String>,
+) -> Result<Vec<Vec<f32>>, String> {
+    let response = api_client(Duration::from_secs(120))?
+        .post("https://api.openai.com/v1/embeddings")
+        .bearer_auth(key)
+        .json(&serde_json::json!({"model":model,"dimensions":dimensions,"input":input}))
+        .send()
+        .await
+        .map_err(|error| format!("Embeddings OpenAI impossibles : {error}"))?;
     let status = response.status();
     let body: serde_json::Value = response
         .json()
@@ -416,7 +526,7 @@ async fn embeddings(key: &str, input: Vec<String>) -> Result<Vec<Vec<f32>>, Stri
             })
             .collect::<Result<Vec<_>, _>>()?;
     }
-    if result.iter().any(|item| item.len() != EMBEDDING_DIMENSIONS) {
+    if result.iter().any(|item| item.len() != dimensions) {
         return Err("Dimensions d'embedding invalides.".to_string());
     }
     Ok(result)
@@ -527,7 +637,13 @@ pub async fn local_analyze_document(
     } else {
         &text
     });
-    let vectors = embeddings(&api_key, parts.clone()).await?;
+    let vectors = embeddings(
+        &api_key,
+        EMBEDDING_MODEL,
+        EMBEDDING_DIMENSIONS,
+        parts.clone(),
+    )
+    .await?;
     document.text = text;
     document.summary = extracted.summary;
     document.category = if extracted.category.trim().is_empty() {
@@ -544,7 +660,11 @@ pub async fn local_analyze_document(
     document.chunks = parts
         .into_iter()
         .zip(vectors)
-        .map(|(text, vector)| IndexedChunk { text, vector })
+        .map(|(text, vector)| IndexedChunk {
+            text,
+            vector,
+            page_number: None,
+        })
         .collect();
     document.status = if document.text.trim().is_empty() {
         "indexed_name".to_string()
@@ -553,7 +673,16 @@ pub async fn local_analyze_document(
     };
     document.analyzed = true;
     document.error = None;
+    write_json(
+        &config_path(&app, &project_id)?,
+        &IndexConfiguration {
+            provider: "openai".into(),
+            model: EMBEDDING_MODEL.into(),
+            dimensions: EMBEDDING_DIMENSIONS,
+        },
+    )?;
     write_json(&path, &document)?;
+    invalidate_search_cache(&project_id);
     Ok(document)
 }
 
@@ -582,16 +711,38 @@ pub(super) async fn ranked(
     query: &str,
     limit: usize,
 ) -> Result<Vec<SearchDoc>, String> {
-    let docs = documents(app, project_id)?;
+    let docs = search_documents(app, project_id)?;
     let settings: LocalSettings = read_json(&settings_path(app)?)?;
+    let config = configuration(app, project_id)?;
     let vector = if docs
         .iter()
         .any(|document| document.chunks.iter().any(|chunk| !chunk.vector.is_empty()))
     {
-        if let Some(api_key) = key(&settings) {
-            embeddings(&api_key, vec![query.to_string()]).await?.pop()
-        } else {
-            None
+        match config.provider.as_str() {
+            "openai" => {
+                let api_key =
+                    key(&settings).ok_or("Clé OpenAI nécessaire pour chercher dans cet index.")?;
+                embeddings(
+                    &api_key,
+                    &config.model,
+                    config.dimensions,
+                    vec![query.to_string()],
+                )
+                .await?
+                .pop()
+            }
+            "local" if config.model == LOCAL_MODEL && config.dimensions == 384 => {
+                let cache = data_dir(app)?.join("models");
+                let query = query.to_string();
+                Some(
+                    tauri::async_runtime::spawn_blocking(move || local_embedding(cache, query))
+                        .await
+                        .map_err(|error| format!("Recherche locale interrompue : {error}"))??,
+                )
+            }
+            _ => {
+                return Err("Le modèle de cet index n'est pas pris en charge hors serveur.".into())
+            }
         }
     } else {
         None
@@ -602,7 +753,7 @@ pub(super) async fn ranked(
         .map(str::to_lowercase)
         .collect();
     let mut scored = Vec::new();
-    for doc in docs {
+    for doc in docs.iter() {
         let name = doc.relative_path.to_lowercase();
         let name_score = words
             .iter()
@@ -615,7 +766,7 @@ pub(super) async fn ranked(
             .enumerate()
             .map(|(index, chunk)| Passage {
                 text: chunk.text.clone(),
-                page_number: None,
+                page_number: chunk.page_number,
                 chunk_index: index,
                 score: vector
                     .as_ref()
@@ -631,10 +782,10 @@ pub(super) async fn ranked(
         }
         let title_only = name_score > semantic && semantic < 0.25;
         scored.push(SearchDoc {
-            job_id: doc.id,
-            document_name: doc.name,
-            source_relative_path: doc.relative_path,
-            category: doc.category,
+            job_id: doc.id.clone(),
+            document_name: doc.name.clone(),
+            source_relative_path: doc.relative_path.clone(),
+            category: doc.category.clone(),
             indexing_mode: if doc.text.is_empty() {
                 "name_only".to_string()
             } else {
@@ -709,6 +860,20 @@ pub async fn local_search_index(
         results,
         model,
     })
+}
+
+#[cfg(test)]
+mod offline_model_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "downloads the multilingual model before checking local inference"]
+    fn multilingual_model_produces_compatible_dimensions() {
+        let cache = std::env::temp_dir().join("clairdoc-model-verification");
+        let vector = local_embedding(cache, "facture de logement".into()).expect("local embedding");
+        assert_eq!(vector.len(), 384);
+        println!("first coordinates: {:?}", &vector[..4]);
+    }
 }
 
 #[cfg(test)]

@@ -57,6 +57,7 @@ export default function DocumentSearch({ project, runtimeInfo, searchDocuments =
           <p className="eyebrow">Recherche documentaire</p>
           <h1>Retrouver un document</h1>
           <p>Recherchez dans les noms et le contenu indexé. Les résultats montrent les passages trouvés, sans réponse de l’assistant.</p>
+          {standalone && project.serverProjectId && !project.sourceRoot && <p>Index copié depuis le serveur : les extraits sont disponibles, mais les fichiers originaux ne sont pas sur cet ordinateur.</p>}
         </div>
       </div>
       <form className="search-panel" onSubmit={submit}>
@@ -79,7 +80,7 @@ export default function DocumentSearch({ project, runtimeInfo, searchDocuments =
         </div>
         <p className="search-explanation">
           {mode === "local"
-            ? `Classement par noms, contenu et similarité des embeddings. ${standalone || runtimeInfo?.embeddingProvider === "openai" ? "L’encodage de votre requête utilise l’API OpenAI, sans modèle conversationnel." : "Avec un index local, aucun appel à OpenAI n’est nécessaire."}`
+            ? `Classement par noms, contenu et similarité des embeddings. ${standalone ? project.embeddingProvider === "local" ? "Le modèle local encode la requête sur cet ordinateur, sans appel à OpenAI." : "L’encodage de votre requête utilise l’API OpenAI, sans modèle conversationnel." : runtimeInfo?.embeddingProvider === "openai" ? "L’encodage de votre requête utilise l’API OpenAI, sans modèle conversationnel." : "Avec un index local, aucun appel à OpenAI n’est nécessaire."}`
             : "OpenAI trie les extraits candidats. Seuls les noms des documents et leurs passages indexés sont renvoyés ; l’IA ne rédige pas de réponse."}
         </p>
       </form>

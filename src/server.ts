@@ -14,6 +14,8 @@ export type RemoteProject = {
   id: string;
   name: string;
   sourceRoot: string | null;
+  serverProjectId?: string | null;
+  embeddingProvider?: "openai" | "local" | null;
 };
 
 export type RuntimeInfo = {

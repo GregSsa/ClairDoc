@@ -2065,6 +2065,7 @@ pub fn run() {
             local_mode::index::local_list_library,
             local_mode::index::local_analyze_document,
             local_mode::index::local_search_index,
+            local_mode::offline::sync_project_offline,
             local_mode::actions::local_get_draft,
             local_mode::actions::local_cancel_draft_action,
             local_mode::actions::local_apply_draft_action,

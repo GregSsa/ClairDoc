@@ -1,6 +1,6 @@
 [package]
 name = "assistant-documents"
-version = "0.1.1"
+version = "0.1.2"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -27,6 +27,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "mul
 dotenvy = "0.15"
 sha2 = "0.10"
 base64 = "0.22"
+fastembed = { version = "7.1.0", default-features = false, features = ["hf-hub-rustls-tls", "ort-download-binaries-rustls-tls"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }

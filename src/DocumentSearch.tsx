@@ -94,7 +94,7 @@ export default function DocumentSearch({ project, runtimeInfo }: Props) {
                   <div><h3>{document.documentName}</h3><p>{document.sourceRelativePath}</p></div>
                   <span className="category-chip">{document.category}</span>
                 </div>
-                {document.indexingMode === "name_only" ? <p className="search-no-text">Document indexé sur son nom uniquement : aucun texte n’a été extrait après OCR.</p> : (
+                {document.indexingMode === "name_only" ? <p className="search-no-text">Document indexé sur son nom uniquement : aucun texte n’a été extrait après OCR.</p> : document.passages.length === 0 ? <p className="search-no-text">Document retrouvé grâce à son titre ou ses métadonnées : aucun extrait du contenu n’est suffisamment pertinent.</p> : (
                   <div className="search-passages">{document.passages.map((passage) => <blockquote key={passage.chunkIndex}><small>{passage.pageNumber ? `Page ${passage.pageNumber}` : "Extrait du document"}</small><p>{passage.text}</p></blockquote>)}</div>
                 )}
                 {project.sourceRoot && <button className="secondary-button" type="button" onClick={() => void openDocument(document.sourceRelativePath)}>Ouvrir le document</button>}

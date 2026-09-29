@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, Suspense, lazy, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import ProjectExplorer from "./ProjectExplorer";
@@ -57,6 +57,8 @@ import {
   undoOrganization,
 } from "./server";
 import "./App.css";
+
+const MarkdownAnswer = lazy(() => import("./MarkdownAnswer"));
 
 type FolderSummary = {
   rootPath: string;
@@ -1244,7 +1246,7 @@ function App() {
                   <div className="conversation">
                     {activeConversation?.messages.map((message) => message.role === "user"
                       ? <div className="user-message" key={message.id}>{message.content}</div>
-                      : <div className="assistant-message" key={message.id}><span>✦</span><div><p>{message.content}</p>{message.actions.length > 0 && <div className="action-list">{message.actions.map((action, index) => <span className={action.status} key={`${message.id}-${index}`}>{action.summary}</span>)}</div>}<div className="source-list">{message.citations.map((citation, index) => <button type="button" key={`${citation.job_id}-${citation.chunk_index}`}><b>[{index + 1}] {citation.document_name}</b><small>{citation.page_number ? `Page ${citation.page_number} · ` : ""}{citation.excerpt}</small></button>)}</div></div></div>)}
+                      : <div className="assistant-message" key={message.id}><span>✦</span><div><Suspense fallback={<p>Affichage de la réponse…</p>}><MarkdownAnswer content={message.content} /></Suspense>{message.actions.length > 0 && <div className="action-list">{message.actions.map((action, index) => <span className={action.status} key={`${message.id}-${index}`}>{action.summary}</span>)}</div>}<div className="source-list">{message.citations.map((citation, index) => <button type="button" key={`${citation.job_id}-${citation.chunk_index}`}><b>[{index + 1}] {citation.document_name}</b><small>{citation.page_number ? `Page ${citation.page_number} · ` : ""}{citation.excerpt}</small></button>)}</div></div></div>)}
                     {pendingQuestion && <><div className="user-message pending" aria-live="polite">{pendingQuestion}</div><div className="assistant-message assistant-loading" role="status" aria-live="polite"><span>✦</span><div><span className="mini-spinner" aria-hidden="true" /><p>L'assistant réfléchit et consulte les outils nécessaires…</p></div></div></>}
                     {!conversationLoading && !pendingQuestion && activeConversation?.messages.length === 0 && <p className="empty-hint">Cette conversation est vide. Demandez une recherche, une synthèse ou une action sur le projet.</p>}
                   </div>
@@ -1441,7 +1443,7 @@ function App() {
                     {rag.status === "answered" && (
                       <div className="answer-card">
                         <strong>Réponse</strong>
-                        <p>{rag.answer.answer}</p>
+                        <Suspense fallback={<p>Affichage de la réponse…</p>}><MarkdownAnswer content={rag.answer.answer} /></Suspense>
                         <h4>Sources utilisées</h4>
                         <ul>{rag.answer.citations.map((citation, index) => <li key={`${citation.job_id}-${citation.chunk_index}`}><b>[{index + 1}] {citation.document_name}{citation.page_number ? ` · page ${citation.page_number}` : ""}</b><span>{citation.excerpt}</span></li>)}</ul>
                       </div>

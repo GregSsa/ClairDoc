@@ -13,6 +13,7 @@ Application de bureau destinée à aider les utilisateurs à inventorier, recher
 - suivi du travail OCR et affichage du texte extrait ;
 - création d'un index sémantique local à partir des PDF OCRisés ;
 - section Recherche distincte de l'Assistant : classement hybride nom/contenu/embeddings, ou tri des passages candidats par OpenAI ;
+- affichage sans extrait des résultats retrouvés uniquement par le titre ou les métadonnées, et rendu Markdown des réponses de l'Assistant ;
 - questions au LLM avec affichage des extraits sources ;
 - import récursif de tous les PDF d'un dossier ;
 - progression globale, pause, reprise et relance des échecs ;

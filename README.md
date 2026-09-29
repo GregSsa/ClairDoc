@@ -1,5 +1,13 @@
 # ClairDoc
 
+## Télécharger ClairDoc pour Windows
+
+La [page Releases](https://github.com/GregSsa/ClairDoc/releases) contient l'installateur Windows 64 bits (`ClairDoc_..._x64-setup.exe`) après publication de la version. Il s'installe sans Node.js, Rust ni WSL. La clé OpenAI est à saisir dans les paramètres de l'application et ne doit jamais être intégrée à l'installateur.
+
+Le workflow GitHub Actions **Installateur Windows** construit un installateur NSIS et le publie comme *préversion* téléchargeable. Il faut encore vérifier son fonctionnement sur un PC Windows. Le propriétaire peut relancer ce workflow depuis l'onglet Actions pour une nouvelle version (en augmentant d'abord la version dans `src-tauri/tauri.conf.json` et `src-tauri/Cargo.toml`). L'installateur n'est pas signé pour l'instant ; Windows peut donc afficher un avertissement de sécurité.
+
+L'identifiant interne `com.assistantdocuments.app` est conservé pour retrouver les données locales déjà enregistrées par les anciennes versions. Le nom visible est désormais **ClairDoc**.
+
 Application de bureau destinée à aider les utilisateurs à inventorier, rechercher et organiser leurs documents administratifs sans modifier les originaux.
 
 ## Première étape disponible

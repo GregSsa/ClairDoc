@@ -28,6 +28,9 @@ dotenvy = "0.15"
 sha2 = "0.10"
 base64 = "0.22"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

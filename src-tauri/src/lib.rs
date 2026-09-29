@@ -10,6 +10,38 @@ use std::{
 };
 use tauri::{AppHandle, Manager};
 
+pub(crate) fn replace_local_file(temporary: &Path, target: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        };
+        let source: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
+        let destination: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+        // Both paths are in the same directory, so this replaces an existing JSON file atomically.
+        if unsafe {
+            MoveFileExW(
+                source.as_ptr(),
+                destination.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        } == 0
+        {
+            return Err(format!(
+                "Remplacement du fichier local impossible : {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        fs::rename(temporary, target)
+            .map_err(|error| format!("Remplacement du fichier local impossible : {error}"))
+    }
+}
+
 mod local_mode;
 
 const CONFIG_FILE_NAME: &str = "server-config.json";
@@ -387,7 +419,7 @@ fn write_server_config(app: &AppHandle, config: &ServerConfig) -> Result<(), Str
         .map_err(|error| format!("Impossible de préparer la configuration : {error}"))?;
     fs::write(&temporary_path, content)
         .map_err(|error| format!("Impossible d’enregistrer la configuration : {error}"))?;
-    fs::rename(&temporary_path, &path)
+    replace_local_file(&temporary_path, &path)
         .map_err(|error| format!("Impossible de finaliser la configuration : {error}"))?;
 
     #[cfg(unix)]
@@ -560,6 +592,11 @@ fn open_project_folder(path: String) -> Result<(), String> {
     {
         return open_linux_path(&directory);
     }
+    #[cfg(target_os = "windows")]
+    {
+        return tauri_plugin_opener::open_path(&directory, None::<&str>)
+            .map_err(|error| format!("Ouverture du dossier impossible : {error}"));
+    }
     #[allow(unreachable_code)]
     Err("L’ouverture du dossier est disponible sous Linux.".to_string())
 }
@@ -632,6 +669,11 @@ fn open_project_file(root_path: String, relative_path: String) -> Result<(), Str
     #[cfg(target_os = "linux")]
     {
         return open_linux_path(&file);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return tauri_plugin_opener::open_path(&file, None::<&str>)
+            .map_err(|error| format!("Ouverture du document impossible : {error}"));
     }
     #[allow(unreachable_code)]
     Err("L’ouverture du document est disponible sous Linux.".to_string())
@@ -760,6 +802,11 @@ fn open_project_directory(root_path: String, relative_path: String) -> Result<()
     #[cfg(target_os = "linux")]
     {
         return open_linux_path(&directory);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return tauri_plugin_opener::open_path(&directory, None::<&str>)
+            .map_err(|error| format!("Ouverture du dossier impossible : {error}"));
     }
     #[allow(unreachable_code)]
     Err("L'ouverture du dossier est disponible sous Linux.".to_string())

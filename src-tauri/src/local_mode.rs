@@ -159,7 +159,7 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
         fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
             .map_err(|error| format!("Protection du fichier impossible : {error}"))?;
     }
-    fs::rename(&temporary, path)
+    crate::replace_local_file(&temporary, path)
         .map_err(|error| format!("Enregistrement local impossible : {error}"))
 }
 

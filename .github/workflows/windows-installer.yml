@@ -1,0 +1,39 @@
+name: Installateur Windows
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/windows-installer.yml
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Installer les dépendances
+        run: npm ci
+      - name: Vérifier le frontend
+        run: npm run build
+      - name: Compiler et préparer la version Windows
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: clairdoc-v__VERSION__
+          releaseName: ClairDoc v__VERSION__
+          releaseBody: 'Installateur Windows 64 bits. La clé OpenAI se configure dans l’application après installation.'
+          releaseDraft: false
+          prerelease: true
+          args: --bundles nsis

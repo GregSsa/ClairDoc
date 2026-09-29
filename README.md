@@ -41,6 +41,7 @@ Application de bureau destinée à aider les utilisateurs à inventorier, recher
 - suppression limitée aux données ClairDoc, sans toucher aux fichiers originaux ;
 - mode sombre persistant ;
 - page de paramètres détaillant les modèles IA, l'OCR, le stockage et les limites ;
+- icônes distinctes pour les dossiers, PDF, documents bureautiques, images et autres formats dans l'Explorateur ;
 - cartographie en arbre avec filtres par recherche, document et type de relation ;
 - explorateur de dossiers navigable niveau par niveau, avec fil d'Ariane compact et pagination de 100 éléments ;
 - recherche globale des documents depuis l'explorateur, filtre par catégorie et affichage des documents liés ;

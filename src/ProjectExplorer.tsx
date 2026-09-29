@@ -17,6 +17,22 @@ import "./ProjectExplorer.css";
 const PAGE_SIZE = 100;
 const EMPTY_DOCUMENTS: LibraryDocument[] = [];
 
+function ExplorerItemIcon({ name, directory = false }: { name: string; directory?: boolean }) {
+  if (directory) {
+    return <span className="explorer-file-icon folder" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M2.5 6.5a2 2 0 0 1 2-2h5l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-15a2 2 0 0 1-2-2z" /></svg></span>;
+  }
+  const extension = name.slice(name.lastIndexOf(".") + 1).toLowerCase();
+  const type = extension === "pdf" ? "pdf"
+    : ["doc", "docx", "odt"].includes(extension) ? "word"
+    : ["xls", "xlsx", "ods", "csv"].includes(extension) ? "sheet"
+    : ["ppt", "pptx", "odp"].includes(extension) ? "slide"
+    : ["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "heic"].includes(extension) ? "image"
+    : ["txt", "md", "rtf"].includes(extension) ? "text"
+    : ["zip", "7z", "rar"].includes(extension) ? "archive" : "generic";
+  const label = { pdf: "PDF", word: "DOC", sheet: "XLS", slide: "PPT", image: "IMG", text: "TXT", archive: "ZIP", generic: "DOC" }[type];
+  return <span className={`explorer-file-icon ${type}`} aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 2.5h8l4.5 4.5v14.5H6a2 2 0 0 1-2-2v-15a2 2 0 0 1 2-2z" /><path d="M14 2.5V7h4.5" /></svg><span>{label}</span></span>;
+}
+
 type Props = {
   projectName: string;
   rootPath: string | null;
@@ -305,12 +321,12 @@ export default function ProjectExplorer({ projectName, rootPath, library, draft,
         {!searchMode && loading && <p className="explorer-empty">Chargement du dossier…</p>}
         {!searchMode && !loading && path && <button type="button" className="explorer-row explorer-parent" onClick={() => navigate(parentPath(path))}><span aria-hidden="true">↶</span><span><strong>Dossier parent</strong><small>Remonter d'un niveau</small></span></button>}
         {!searchMode && !loading && displayedEntries.map((entry) => entry.kind === "directory" ? (
-          <button type="button" className={`explorer-row ${plannedDirectoryPaths.has(entry.relativePath) ? "planned" : ""}`} key={entry.relativePath} onClick={() => navigate(entry.relativePath)}><span className="explorer-file-icon folder" aria-hidden="true">▰</span><span><strong>{entry.name}</strong><small>{plannedDirectoryPaths.has(entry.relativePath) ? "Dossier présent dans le brouillon" : `${folderCounts.get(entry.name) ?? 0} document(s) importé(s) dans ce dossier et ses sous-dossiers`}</small></span><span className="explorer-row-end" aria-hidden="true">›</span></button>
+          <button type="button" className={`explorer-row ${plannedDirectoryPaths.has(entry.relativePath) ? "planned" : ""}`} key={entry.relativePath} onClick={() => navigate(entry.relativePath)}><ExplorerItemIcon name={entry.name} directory /><span><strong>{entry.name}</strong><small>{plannedDirectoryPaths.has(entry.relativePath) ? "Dossier présent dans le brouillon" : `${folderCounts.get(entry.name) ?? 0} document(s) importé(s) dans ce dossier et ses sous-dossiers`}</small></span><span className="explorer-row-end" aria-hidden="true">›</span></button>
         ) : (
-          <button type="button" className={`explorer-row ${selectedPath === entry.relativePath ? "selected" : ""} ${plannedPaths.has(entry.relativePath) ? "planned" : ""}`} key={entry.relativePath} onClick={() => setSelectedPath(entry.relativePath)} onDoubleClick={() => { if (!plannedPaths.has(entry.relativePath)) void openSelected(entry.relativePath); }}><span className="explorer-file-icon" aria-hidden="true">▤</span><span><strong>{entry.name}</strong><small>{plannedPaths.has(entry.relativePath) ? "Prévu dans le brouillon · non présent sur le disque" : documentByPath.has(entry.relativePath) ? `${documentByPath.get(entry.relativePath)?.category} · importé` : "Non importé"}{entry.bytes ? ` · ${new Intl.NumberFormat("fr-FR").format(entry.bytes)} octets` : ""}</small></span><span className="explorer-row-end" aria-hidden="true">›</span></button>
+          <button type="button" className={`explorer-row ${selectedPath === entry.relativePath ? "selected" : ""} ${plannedPaths.has(entry.relativePath) ? "planned" : ""}`} key={entry.relativePath} onClick={() => setSelectedPath(entry.relativePath)} onDoubleClick={() => { if (!plannedPaths.has(entry.relativePath)) void openSelected(entry.relativePath); }}><ExplorerItemIcon name={entry.name} /><span><strong>{entry.name}</strong><small>{plannedPaths.has(entry.relativePath) ? "Prévu dans le brouillon · non présent sur le disque" : documentByPath.has(entry.relativePath) ? `${documentByPath.get(entry.relativePath)?.category} · importé` : "Non importé"}{entry.bytes ? ` · ${new Intl.NumberFormat("fr-FR").format(entry.bytes)} octets` : ""}</small></span><span className="explorer-row-end" aria-hidden="true">›</span></button>
         ))}
         {!searchMode && !loading && displayedEntries.length === 0 && <p className="explorer-empty">Ce dossier est vide.</p>}
-        {searchMode && displayedResults.map((document) => <button type="button" className={`explorer-row ${selectedPath === document.sourceRelativePath ? "selected" : ""} ${plannedPaths.has(document.sourceRelativePath) ? "planned" : ""}`} key={`${document.jobId}-${document.sourceRelativePath}`} onClick={() => setSelectedPath(document.sourceRelativePath)}><span className="explorer-file-icon" aria-hidden="true">▤</span><span><strong>{document.name}</strong><small>{document.sourceRelativePath} · {document.category}{plannedPaths.has(document.sourceRelativePath) ? " · brouillon" : ""}</small></span><span className="explorer-row-end">{relationCounts.get(document.jobId) ?? 0} lien(s)</span></button>)}
+        {searchMode && displayedResults.map((document) => <button type="button" className={`explorer-row ${selectedPath === document.sourceRelativePath ? "selected" : ""} ${plannedPaths.has(document.sourceRelativePath) ? "planned" : ""}`} key={`${document.jobId}-${document.sourceRelativePath}`} onClick={() => setSelectedPath(document.sourceRelativePath)}><ExplorerItemIcon name={document.name} /><span><strong>{document.name}</strong><small>{document.sourceRelativePath} · {document.category}{plannedPaths.has(document.sourceRelativePath) ? " · brouillon" : ""}</small></span><span className="explorer-row-end">{relationCounts.get(document.jobId) ?? 0} lien(s)</span></button>)}
         {searchMode && results.length === 0 && <p className="explorer-empty">Aucun document ne correspond à ces filtres.</p>}
       </div>
       {!searchMode && directory && directory.total > PAGE_SIZE && <div className="explorer-pagination"><button type="button" disabled={page === 0 || loading} onClick={() => setPage((value) => Math.max(0, value - 1))}>Précédent</button><span>Page {page + 1} sur {Math.ceil(directory.total / PAGE_SIZE)}</span><button type="button" disabled={loading || (page + 1) * PAGE_SIZE >= directory.total} onClick={() => setPage((value) => value + 1)}>Suivant</button></div>}

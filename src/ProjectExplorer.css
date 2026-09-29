@@ -46,8 +46,28 @@
 .explorer-row strong, .explorer-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .explorer-row strong { font-size: 14px; }
 .explorer-row small { color: #73847b; font-size: 12px; }
-.explorer-file-icon { width: 36px; height: 36px; flex: none; display: grid; place-items: center; border-radius: 10px; color: #4b7b6c; background: #e9f2ec; font-size: 19px; }
-.explorer-file-icon.folder { color: #9b6a22; background: #fff2d7; }
+.explorer-file-icon { --icon-color: #4b7b6c; position: relative; width: 40px; height: 40px; flex: none; display: grid; place-items: center; border-radius: 10px; color: var(--icon-color); background: #e9f2ec; }
+.explorer-file-icon svg { width: 27px; height: 27px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linejoin: round; }
+.explorer-file-icon > span { position: absolute; right: 2px; bottom: 2px; min-width: 25px; padding: 1px 2px; border-radius: 3px; color: #fff; background: var(--icon-color); text-align: center; font-size: 8px; font-weight: 900; letter-spacing: .02em; }
+.explorer-file-icon.folder { --icon-color: #aa7526; background: #fff2d7; }
+.explorer-file-icon.folder svg { fill: currentColor; stroke: none; }
+.explorer-file-icon.pdf { --icon-color: #b44442; background: #fcebea; }
+.explorer-file-icon.word { --icon-color: #2f67ac; background: #e8f1fc; }
+.explorer-file-icon.sheet { --icon-color: #27805b; background: #e6f5ec; }
+.explorer-file-icon.slide { --icon-color: #b96a32; background: #fff0e5; }
+.explorer-file-icon.image { --icon-color: #7657a6; background: #f0ebfa; }
+.explorer-file-icon.text { --icon-color: #516b7c; background: #eaf0f4; }
+.explorer-file-icon.archive { --icon-color: #866437; background: #f5eddf; }
+[data-theme="dark"] .explorer-file-icon { background: #23372d; }
+[data-theme="dark"] .explorer-file-icon.folder { --icon-color: #e0ad60; background: #43351f; }
+[data-theme="dark"] .explorer-file-icon.pdf { --icon-color: #e68179; background: #412727; }
+[data-theme="dark"] .explorer-file-icon.word { --icon-color: #8ab5ef; background: #223a55; }
+[data-theme="dark"] .explorer-file-icon.sheet { --icon-color: #88d7a9; background: #214636; }
+[data-theme="dark"] .explorer-file-icon.slide { --icon-color: #edac78; background: #493323; }
+[data-theme="dark"] .explorer-file-icon.image { --icon-color: #c1a4ed; background: #382d4b; }
+[data-theme="dark"] .explorer-file-icon.text { --icon-color: #b3c9d9; background: #30404a; }
+[data-theme="dark"] .explorer-file-icon.archive { --icon-color: #dfbf85; background: #403522; }
+[data-theme="dark"] .explorer-file-icon > span { color: #15211b; }
 .explorer-row-end { margin-left: auto; flex: none; color: #6d8277; font-size: 13px; }
 .explorer-empty { margin: 0; padding: 35px 20px; color: #708078; text-align: center; }
 .explorer-parent > span:first-child { width: 36px; text-align: center; color: #397b64; font-size: 24px; }

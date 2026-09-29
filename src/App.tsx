@@ -1,4 +1,4 @@
-import { FormEvent, Suspense, lazy, useEffect, useState } from "react";
+import { FormEvent, Suspense, lazy, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -7,6 +7,8 @@ import DocumentSearch from "./DocumentSearch";
 import LocalApp from "./LocalApp";
 import FolderIcon from "./FolderIcon";
 import ConversationDetails from "./ConversationDetails";
+import { defaultFirstPassOptions, firstPassPrompt, readFirstPassOptions, saveFirstPassOptions } from "./firstPass";
+import FirstPassSettings from "./FirstPassSettings";
 import { useConversationAutoscroll } from "./useConversationAutoscroll";
 import {
   applyLocalAssistantAction,
@@ -184,11 +186,12 @@ function App() {
   const [projects, setProjects] = useState<RemoteProject[]>([]);
   const [ocr, setOcr] = useState<OcrState>({ status: "idle" });
   const [batch, setBatch] = useState<BatchState>({ status: "idle" });
+  const batchOcrEnabled = useRef(true);
   const [projectJobs, setProjectJobs] = useState<OcrJob[]>([]);
   const [rag, setRag] = useState<RagState>({ status: "idle" });
   const [question, setQuestion] = useState("");
   const [organization, setOrganization] = useState<OrganizationState>({ status: "idle" });
-  const [selectedPlanEntries, setSelectedPlanEntries] = useState<string[]>([]);
+  const [firstPass, setFirstPass] = useState(defaultFirstPassOptions);
   const [backup, setBackup] = useState<BackupState>({ status: "idle" });
   const [offlineSync, setOfflineSync] = useState<{ status: "idle" | "running" | "done" | "error"; message: string }>({ status: "idle", message: "" });
   const [activeView, setActiveView] = useState<WorkspaceView>("home");
@@ -209,7 +212,7 @@ function App() {
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
   const [libraryRefresh, setLibraryRefresh] = useState(0);
   const [organizationMode, setOrganizationMode] = useState<"copy" | "move">("copy");
-  const [renameFiles, setRenameFiles] = useState(false);
+  const [renameFiles, setRenameFiles] = useState(true);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [conversationLoading, setConversationLoading] = useState(false);
@@ -343,7 +346,7 @@ function App() {
 
     let active = true;
     const file = batch.files[batch.next];
-    submitOcrJob(file.path, project.project.id, file.relativePath)
+    submitOcrJob(file.path, project.project.id, file.relativePath, batchOcrEnabled.current)
       .then((job) => {
         if (!active) return;
         setBatch((current) => {
@@ -496,6 +499,9 @@ function App() {
 
   function selectProject(selected?: RemoteProject) {
     setProject(selected ? { status: "ready", project: selected } : { status: "idle" });
+    const options = selected ? readFirstPassOptions(selected.id) : { ...defaultFirstPassOptions };
+    setFirstPass(options);
+    setRenameFiles(options.rename);
     setBatch({ status: "idle" });
     setRag({ status: "idle" });
     setOfflineSync({ status: "idle", message: "" });
@@ -651,6 +657,7 @@ function App() {
         const target = selected.sourceRoot ? selected : await updateRemoteProject(selected.id, undefined, scan.summary.rootPath);
         setProject({ status: "ready", project: target });
         setProjects((current) => current.map((item) => item.id === target.id ? target : item));
+        saveFirstPassOptions(target.id, firstPass);
         await importAllDocuments(target);
       } catch (error) {
         setProject({ status: "error", message: errorMessage(error, "Le dossier n’a pas pu être ajouté.") });
@@ -662,10 +669,17 @@ function App() {
       const created = await createRemoteProject(scan.summary.folderName, scan.summary.rootPath);
       setProject({ status: "ready", project: created });
       setProjects((current) => [created, ...current.filter((item) => item.id !== created.id)]);
+      saveFirstPassOptions(created.id, firstPass);
       await importAllDocuments(created);
     } catch (error) {
       setProject({ status: "error", message: errorMessage(error, "Le projet n’a pas pu être créé.") });
     }
+  }
+
+  function prepareFirstPass() {
+    setQuestion(firstPassPrompt(firstPass));
+    setAllowAssistantActions(true);
+    setActiveView("assistant");
   }
 
   async function importAllDocuments(target?: RemoteProject) {
@@ -696,6 +710,7 @@ function App() {
         return;
       }
       await resumeProjectOcr(activeProject.id);
+      batchOcrEnabled.current = firstPass.ocr;
       setBatch({ status: "uploading", files, next: 0, jobIds: [], paused: false });
     } catch (error) {
       setBatch({
@@ -845,8 +860,7 @@ function App() {
     if (project.status !== "ready") return;
     setOrganization({ status: "planning" });
     try {
-      const plan = await createOrganizationPlan(project.project.id, renameFiles);
-      setSelectedPlanEntries(plan.entries.map((entry) => entry.job_id));
+      const plan = await createOrganizationPlan(project.project.id, { ...firstPass, rename: renameFiles });
       setOrganization({ status: "ready", plan });
     } catch (error) {
       setOrganization({
@@ -873,6 +887,31 @@ function App() {
 
   async function applyPlan() {
     if (scan.status !== "ready" || !("plan" in organization) || !organization.plan) return;
+    const invalid = organization.plan.entries.find((entry) => {
+      const depth = entry.suggested_path.replace(/\\/g, "/").split("/").filter(Boolean).length - 1;
+      return (!firstPass.organize && depth > 0) || (firstPass.maxDepth !== null && depth > firstPass.maxDepth);
+    });
+    if (invalid) {
+      setOrganization({ status: "error", plan: organization.plan, message: `Le chemin « ${invalid.suggested_path} » dépasse la profondeur choisie. Corrigez-le avant validation.` });
+      return;
+    }
+    if (firstPass.maxChildren !== null) {
+      const children = new Map<string, Set<string>>();
+      for (const entry of organization.plan.entries) {
+        const folders = entry.suggested_path.replace(/\\/g, "/").split("/").filter(Boolean).slice(0, -1);
+        folders.forEach((folder, index) => {
+          const parent = folders.slice(0, index).join("/");
+          const names = children.get(parent) ?? new Set<string>();
+          names.add(folder.toLocaleLowerCase("fr"));
+          children.set(parent, names);
+        });
+      }
+      const tooMany = [...children.entries()].find(([, names]) => names.size > firstPass.maxChildren!);
+      if (tooMany) {
+        setOrganization({ status: "error", plan: organization.plan, message: `Le dossier « ${tooMany[0] || "racine"} » contient trop de sous-dossiers directs. Corrigez les chemins avant validation.` });
+        return;
+      }
+    }
     const outputPath = await open({
       directory: true,
       multiple: false,
@@ -880,7 +919,7 @@ function App() {
     });
     if (!outputPath) return;
     const plan = organization.plan;
-    const entries = plan.entries.filter((entry) => selectedPlanEntries.includes(entry.job_id));
+    const entries = plan.entries;
     if (entries.length === 0) return;
     if (organizationMode === "move" && !window.confirm(
       "Mode déplacement : les fichiers originaux seront retirés de leur emplacement actuel après création et vérification de la nouvelle architecture. Une sauvegarde de sécurité permettra l’annulation. Continuer ?",
@@ -1396,6 +1435,8 @@ function App() {
                 {scan.summary.inaccessibleCount > 0 && <div className="breakdown-row warning-row"><span>Éléments non accessibles</span><strong>{formatNumber(scan.summary.inaccessibleCount)}</strong></div>}
               </div>
 
+              <FirstPassSettings options={firstPass} disabled={batch.status === "discovering" || batch.status === "uploading" || batch.status === "processing"} onChange={(options) => { setFirstPass(options); setRenameFiles(options.rename); if (project.status === "ready") saveFirstPassOptions(project.project.id, options); }} />
+
               <div className="summary-actions">
                 <button className="secondary-button" onClick={chooseFolder}>Choisir un autre dossier</button>
                 <button className="primary-button" disabled={!connected || project.status === "creating" || batch.status === "discovering" || batch.status === "uploading" || batch.status === "processing"} onClick={createProject}>
@@ -1409,9 +1450,7 @@ function App() {
                 <>
                 <section className="ocr-panel" aria-labelledby="ocr-title">
                   <div><p className="success-label">Projet prêt · {project.project.name}</p><h3 id="ocr-title">Importer les documents du dossier</h3><p>PDF, textes, Office, courriels et images sont inclus. Les fichiers identiques ne sont pas retraités.</p></div>
-                  {batch.status === "idle" && (
-                    <div className="import-actions"><button className="primary-button" onClick={() => void importAllDocuments()}>Importer tous les documents</button><button className="text-button" onClick={choosePdf}>Ou choisir un seul document</button></div>
-                  )}
+                  {batch.status === "idle" && <div className="import-actions"><button className="primary-button" onClick={() => void importAllDocuments()}>Importer tous les documents</button></div>}
                   {batch.status === "discovering" && <div className="ocr-progress"><span className="mini-spinner" /> Recherche des documents…</div>}
                   {batch.status === "uploading" && (
                     <div className="batch-progress">
@@ -1426,7 +1465,7 @@ function App() {
                       <progress value={completedJobs.length + failedJobs.length} max={Math.max(batch.jobIds.length, 1)} />
                     </div>
                   )}
-                  {batch.status === "completed" && <div className="batch-complete"><strong>Import terminé</strong><span>{completedJobs.length} document(s) prêt(s), {failedJobs.length} échec(s).</span><button className="text-button" onClick={() => void importAllDocuments()}>Rechercher les nouveaux documents</button><button className="secondary-button" onClick={() => setActiveView("assistant")}>Demander à l’assistant de travailler sur ce projet</button></div>}
+                  {batch.status === "completed" && <div className="batch-complete"><strong>Import terminé</strong><span>{completedJobs.length} document(s) prêt(s), {failedJobs.length} échec(s).</span><button className="text-button" onClick={() => void importAllDocuments()}>Rechercher les nouveaux documents</button><button className="secondary-button" onClick={prepareFirstPass}>Préparer le premier nettoyage avec l’assistant</button></div>}
                   {batch.status === "error" && <div className="ocr-result error-result"><p>{batch.message}</p>{batch.files.length > 0 && <button className="secondary-button" onClick={resumeUploadAfterError}>Reprendre l’envoi</button>}</div>}
                   {failedJobs.length > 0 && <section className="import-errors" aria-label="Détail des échecs d’import"><h4>Documents en échec</h4><p>Ouvrez un document pour consulter la raison. Une relance seule ne corrige pas une erreur persistante.</p>{failedJobs.map((job) => <details key={job.id}><summary>{job.original_filename}</summary><pre>{job.error || "Le serveur n’a pas fourni de diagnostic."}</pre><small>Identifiant du traitement : {job.id}</small></details>)}<button className="secondary-button retry-button" onClick={retryFailedJobs}>Relancer {failedJobs.length} échec(s)</button></section>}
                   {batch.status === "idle" && projectJobs.length > 0 && <p className="existing-jobs">Historique : {completedJobs.length} terminé(s), {pendingJobs.length} en cours, {failedJobs.length} en échec.</p>}
@@ -1477,21 +1516,20 @@ function App() {
                         <ul>{rag.answer.citations.map((citation, index) => <li key={`${citation.job_id}-${citation.chunk_index}`}><b>[{index + 1}] {citation.document_name}{citation.page_number ? ` · page ${citation.page_number}` : ""}</b><span>{citation.excerpt}</span></li>)}</ul>
                       </div>
                     )}
-                    {indexResult && organization.status !== "applied" && <div className="organization-start"><label><input type="checkbox" checked={renameFiles} disabled={organization.status === "planning" || organization.status === "applying"} onChange={(event) => { setRenameFiles(event.target.checked); setOrganization({ status: "idle" }); }} /> Autoriser l’IA à proposer de nouveaux noms d’après le contenu</label><p>Sans cette option, les noms actuels sont conservés (sauf doublons). Les propositions sont modifiables avant validation. Le renommage IA utilise OpenAI.</p>{organization.status === "idle" && <button className="secondary-button" onClick={prepareOrganization}>Préparer le classement</button>}</div>}
+                    {indexResult && organization.status !== "applied" && <div className="organization-start"><label><input type="checkbox" checked={renameFiles} disabled={organization.status === "planning" || organization.status === "applying"} onChange={(event) => { setRenameFiles(event.target.checked); setFirstPass((current) => ({ ...current, rename: event.target.checked })); setOrganization({ status: "idle" }); }} /> Autoriser l’IA à proposer de nouveaux noms d’après le contenu</label><p>Les noms actuels sont conservés si l’option est désactivée. Les propositions sont modifiables avant validation. Le renommage IA utilise OpenAI.</p>{organization.status === "idle" && <button className="secondary-button" onClick={prepareOrganization}>Préparer le classement</button>}</div>}
                     {organization.status === "planning" && <div className="ocr-progress organization-start"><span className="mini-spinner" /> Analyse des catégories et des noms…</div>}
                     {organization.status === "error" && <div className="ocr-result error-result organization-start"><p>{organization.message}</p><button className="secondary-button" onClick={prepareOrganization}>Réessayer</button></div>}
                     {organizationPlan && (
                       <div className="organization-preview">
-                        <div className="result-heading"><div><strong>Prévisualisation du classement</strong><p>{selectedPlanEntries.length} document(s) sélectionné(s) sur {organizationPlan.entries.length}. Les originaux resteront inchangés.</p></div><button className="text-button" onClick={() => setSelectedPlanEntries(selectedPlanEntries.length === organizationPlan.entries.length ? [] : organizationPlan.entries.map((entry) => entry.job_id))}>{selectedPlanEntries.length === organizationPlan.entries.length ? "Tout désélectionner" : "Tout sélectionner"}</button></div>
+                        <div className="result-heading"><div><strong>Prévisualisation du classement</strong><p>{organizationPlan.entries.length} document(s) inclus. Les originaux resteront inchangés.</p></div></div>
                         <div className="plan-list">
                           {organizationPlan.entries.map((entry) => (
-                            <article key={entry.job_id} className={selectedPlanEntries.includes(entry.job_id) ? "selected" : ""}>
-                              <input type="checkbox" aria-label={`Classer ${entry.original_filename}`} checked={selectedPlanEntries.includes(entry.job_id)} onChange={() => setSelectedPlanEntries((current) => current.includes(entry.job_id) ? current.filter((id) => id !== entry.job_id) : [...current, entry.job_id])} />
+                            <article key={entry.job_id} className="selected">
                               <div><strong>{entry.original_filename}</strong><span>{entry.category}{entry.document_date ? ` · ${entry.document_date}` : ""}</span><small>{entry.reason}</small><input aria-label={`Chemin proposé pour ${entry.original_filename}`} value={entry.suggested_path} onChange={(event) => updateSuggestedPath(entry.job_id, event.target.value)} /></div>
                             </article>
                           ))}
                         </div>
-                        {organization.status !== "applied" && <><div className="organization-mode"><label className={organizationMode === "copy" ? "selected" : ""}><input type="radio" name="organization-mode" checked={organizationMode === "copy"} onChange={() => setOrganizationMode("copy")} /><strong>Copier</strong><span>Conserver les originaux à leur emplacement actuel.</span></label><label className={organizationMode === "move" ? "selected danger-choice" : ""}><input type="radio" name="organization-mode" checked={organizationMode === "move"} onChange={() => setOrganizationMode("move")} /><strong>Déplacer et nettoyer</strong><span>Utiliser les PDF OCRisés, créer l’architecture puis retirer les anciens fichiers.</span></label></div><button className="primary-button" disabled={organization.status === "applying" || selectedPlanEntries.length === 0} onClick={applyPlan}>{organization.status === "applying" ? "Classement en cours…" : organizationMode === "copy" ? "Valider et copier" : "Valider et déplacer"}</button></>}
+                        {organization.status !== "applied" && <><div className="organization-mode"><label className={organizationMode === "copy" ? "selected" : ""}><input type="radio" name="organization-mode" checked={organizationMode === "copy"} onChange={() => setOrganizationMode("copy")} /><strong>Copier</strong><span>Conserver les originaux à leur emplacement actuel.</span></label><label className={organizationMode === "move" ? "selected danger-choice" : ""}><input type="radio" name="organization-mode" checked={organizationMode === "move"} onChange={() => setOrganizationMode("move")} /><strong>Déplacer et nettoyer</strong><span>Utiliser les PDF OCRisés, créer l’architecture puis retirer les anciens fichiers.</span></label></div><button className="primary-button" disabled={organization.status === "applying" || organizationPlan.entries.length === 0} onClick={applyPlan}>{organization.status === "applying" ? "Classement en cours…" : organizationMode === "copy" ? "Valider et copier" : "Valider et déplacer"}</button></>}
                         {organization.status === "applied" && <div className="organization-success"><strong>{organization.copied} document(s) classé(s)</strong><span>Le manifeste et la sauvegarde de sécurité permettent une annulation contrôlée tant que les nouveaux fichiers ne sont pas modifiés.</span><button className="secondary-button" onClick={undoLastOrganization}>Annuler ce classement</button></div>}
                       </div>
                     )}

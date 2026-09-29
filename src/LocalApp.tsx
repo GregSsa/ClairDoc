@@ -5,6 +5,8 @@ import ProjectExplorer from "./ProjectExplorer";
 import DocumentSearch from "./DocumentSearch";
 import FolderIcon from "./FolderIcon";
 import ConversationDetails from "./ConversationDetails";
+import { defaultFirstPassOptions, firstPassPrompt, readFirstPassOptions, saveFirstPassOptions } from "./firstPass";
+import FirstPassSettings from "./FirstPassSettings";
 import { useConversationAutoscroll } from "./useConversationAutoscroll";
 import { openProjectFile, openProjectFolder, type Conversation, type ConversationSummary, type DocumentLibrary, type DocumentSearchResult, type LibraryDocument, type ProjectDraft, type RemoteProject } from "./server";
 import "./LocalApp.css";
@@ -29,7 +31,8 @@ export default function LocalApp({ serverUrl, onRetryServer }: { serverUrl: stri
   const [catalog, setCatalog] = useState<CatalogResult | null>(null);
   const [analysis, setAnalysis] = useState<{current: number; total: number; failed: number; lastError: string} | null>(null);
   const pauseAnalysis = useRef(false);
-  const [batchSize, setBatchSize] = useState(20);
+  const [firstPass, setFirstPass] = useState(defaultFirstPassOptions);
+  const [pendingFolder, setPendingFolder] = useState<{ path: string; attach: boolean } | null>(null);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [question, setQuestion] = useState("");
@@ -60,6 +63,7 @@ export default function LocalApp({ serverUrl, onRetryServer }: { serverUrl: stri
   useEffect(() => { localStorage.setItem("clairdoc-local-allow-actions", String(allowActions)); }, [allowActions]);
 
   useEffect(() => {
+    setFirstPass(project ? readFirstPassOptions(project.id) : { ...defaultFirstPassOptions });
     setDocumentSearch("");
     setCategoryFilter("Toutes");
     setLinkFilter("Tous");
@@ -133,23 +137,40 @@ export default function LocalApp({ serverUrl, onRetryServer }: { serverUrl: stri
     if (!project) return;
     const selected = await open({ directory: true, multiple: false, title: "Choisir le dossier de ce projet" });
     if (!selected) return;
+    setPendingFolder({ path: selected, attach: true });
+    setView("import");
+  }
+
+  async function confirmFolder() {
+    if (!pendingFolder) return;
     setBusy(true); setError("");
     try {
-      const updated = await invoke<RemoteProject>("local_update_project", { projectId: project.id, sourceRoot: selected });
-      setProjects((current) => current.map((item) => item.id === updated.id ? updated : item)); setProject(updated);
+      if (pendingFolder.attach && project) {
+        const updated = await invoke<RemoteProject>("local_update_project", { projectId: project.id, sourceRoot: pendingFolder.path });
+        saveFirstPassOptions(updated.id, firstPass);
+        setProjects((current) => current.map((item) => item.id === updated.id ? updated : item)); setProject(updated);
+      } else {
+        const parts = pendingFolder.path.split(/[\\/]/).filter(Boolean);
+        const folderName = parts[parts.length - 1] ?? "Nouveau projet";
+        const item = await invoke<RemoteProject>("local_create_project", { name: folderName, sourceRoot: pendingFolder.path });
+        saveFirstPassOptions(item.id, firstPass);
+        setProjects((current) => [...current, item]); setProject(item);
+      }
+      setPendingFolder(null); setView("import");
     } catch (failure) { setError(message(failure)); } finally { setBusy(false); }
   }
 
   async function addFolderProject() {
     const selected = await open({ directory: true, multiple: false, title: "Choisir un dossier à ajouter" });
     if (!selected) return;
-    const parts = selected.split(/[\\/]/).filter(Boolean);
-    const folderName = parts[parts.length - 1] ?? "Nouveau projet";
-    setBusy(true); setError("");
-    try {
-      const item = await invoke<RemoteProject>("local_create_project", { name: folderName, sourceRoot: selected });
-      setProjects((current) => [...current, item]); setProject(item); setView("import");
-    } catch (failure) { setError(message(failure)); } finally { setBusy(false); }
+    setPendingFolder({ path: selected, attach: false });
+    setView("import");
+  }
+
+  function prepareFirstPass() {
+    setQuestion(firstPassPrompt(firstPass));
+    setAllowActions(true);
+    setView("assistant");
   }
 
   async function renameProject(item: RemoteProject) {
@@ -225,7 +246,7 @@ export default function LocalApp({ serverUrl, onRetryServer }: { serverUrl: stri
   async function analyzeDocuments() {
     if (!project || !library || !status?.configured || analysis) return;
     const pendingDocs = library.documents.filter((item) => !item.analyzed);
-    const selected = pendingDocs.slice(0, batchSize || pendingDocs.length);
+    const selected = pendingDocs;
     if (selected.length === 0) return;
     if (!window.confirm(`Analyser ${selected.length} document(s) avec OpenAI ?\n\nChaque PDF, image ou document Office traité sera envoyé à l’API. Le coût dépend de la taille et du nombre de pages et n’est pas estimé ici. Les fichiers de plus de 10 Mo restent indexés par nom. Vous pourrez interrompre le traitement après le document en cours.`)) return;
     pauseAnalysis.current = false;
@@ -424,11 +445,16 @@ export default function LocalApp({ serverUrl, onRetryServer }: { serverUrl: stri
       {view === "import" && <>
         <section className="hero"><p className="eyebrow">Nouveau classement</p><h1>Commençons par vos documents</h1><p className="hero-copy">Choisissez un dossier. ClairDoc identifie les fichiers et leurs sous-dossiers sans déplacer ni modifier les originaux.</p></section>
         <section className="workspace-card">
-          {!project ? <div className="empty-state"><div className="folder-illustration"><FolderIcon /></div><h2>Choisir le dossier à organiser</h2><p>Un nouveau projet sera créé pour ce dossier et tous ses sous-dossiers.</p><button className="primary-button" onClick={() => void addFolderProject()}><FolderIcon /> Choisir un dossier</button></div>
+          {pendingFolder ? <div className="summary-state">
+              <div className="summary-heading"><div><p className="success-label">Dossier sélectionné</p><h2>Premier nettoyage</h2><p className="path-label">{pendingFolder.path}</p></div></div>
+              <FirstPassSettings options={firstPass} onChange={setFirstPass} standalone />
+              <div className="summary-actions"><button className="secondary-button" onClick={() => setPendingFolder(null)}>Annuler</button><button className="primary-button" disabled={busy} onClick={() => void confirmFolder()}>{busy ? "Création…" : "Créer le projet avec tous les documents"}</button></div>
+            </div>
+            : !project ? <div className="empty-state"><div className="folder-illustration"><FolderIcon /></div><h2>Choisir le dossier à organiser</h2><p>Un nouveau projet sera créé pour ce dossier et tous ses sous-dossiers.</p><button className="primary-button" onClick={() => void addFolderProject()}><FolderIcon /> Choisir un dossier</button></div>
             : project.serverProjectId && !project.sourceRoot ? <div className="empty-state"><div className="folder-illustration"><FolderIcon /></div><h2>Index disponible hors serveur</h2><p>{library?.documents.length ?? 0} document(s) consultables par recherche et dans l’assistant. Les originaux ne sont pas copiés : pour ajouter de nouveaux fichiers, créez un projet depuis un dossier de cet ordinateur.</p><button className="primary-button" onClick={() => void addFolderProject()}>Créer un projet depuis un dossier</button></div>
             : !project.sourceRoot ? <div className="empty-state"><div className="folder-illustration"><FolderIcon /></div><h2>Associer un dossier à {project.name}</h2><p>Tous ses sous-dossiers seront inclus dans le catalogue.</p><button className="primary-button" onClick={() => void attachFolder()}><FolderIcon /> Choisir un dossier</button></div>
             : <><div className="local-import-heading"><div><h2>{project.name}</h2><p>{project.sourceRoot}</p></div><button className="secondary-button" onClick={() => void openProjectFolder(project.sourceRoot!)}>Ouvrir le dossier</button></div><div className="local-import-actions"><button className="primary-button" disabled={busy} onClick={() => void addFiles()}>+ Ajouter des fichiers</button><button className="secondary-button" onClick={() => void addFolderProject()}>Créer un projet depuis un autre dossier</button><button className="secondary-button" onClick={() => void refreshLibrary()}>Actualiser le catalogue</button></div><p className="reassurance">Les fichiers ajoutés sont copiés dans « Ajouts » ; leurs originaux restent à leur place.</p>{importNotice && <div className="batch-complete" role="status">{importNotice}</div>}
-              <div className="local-analysis-panel"><div><strong>{catalog?.total ?? library?.documents.length ?? 0} document(s) catalogué(s)</strong><p>{library?.documents.filter((item) => item.status === "indexed").length ?? 0} avec contenu · {library?.documents.filter((item) => item.status !== "indexed").length ?? 0} sur le nom uniquement · {library?.documents.filter((item) => !item.analyzed).length ?? 0} à analyser</p><small>Le catalogage des noms est gratuit. L’analyse extrait le contenu et crée des embeddings via OpenAI ; elle peut engendrer des frais.</small></div><div className="local-heading-actions"><label>Nombre à analyser <select value={batchSize} onChange={(event) => setBatchSize(Number(event.target.value))}><option value={5}>5</option><option value={20}>20</option><option value={100}>100</option><option value={0}>Tous</option></select></label><button className="primary-button" disabled={!status?.configured || !!analysis || !library?.documents.some((item) => !item.analyzed)} onClick={() => void analyzeDocuments()}>Analyser les documents</button>{analysis && <button className="secondary-button" onClick={() => { pauseAnalysis.current = true; }}>Arrêter après ce fichier</button>}</div>{analysis && <p role="status">{analysis.current}/{analysis.total} traité(s) · {analysis.failed} échec(s){analysis.lastError ? ` · ${analysis.lastError}` : ""}</p>}</div>
+              <div className="local-analysis-panel"><div><strong>{catalog?.total ?? library?.documents.length ?? 0} document(s) catalogué(s)</strong><p>{library?.documents.filter((item) => item.status === "indexed").length ?? 0} avec contenu · {library?.documents.filter((item) => item.status !== "indexed").length ?? 0} sur le nom uniquement · {library?.documents.filter((item) => !item.analyzed).length ?? 0} à analyser</p><small>Le catalogage des noms est gratuit. L’analyse de tous les documents via OpenAI est facultative, demande confirmation et peut engendrer des frais.</small></div><div className="local-heading-actions"><button className="primary-button" disabled={!status?.configured || !!analysis || !library?.documents.some((item) => !item.analyzed)} onClick={() => void analyzeDocuments()}>Analyser tous les documents</button>{analysis && <button className="secondary-button" onClick={() => { pauseAnalysis.current = true; }}>Arrêter après ce fichier</button>}<button className="secondary-button" onClick={prepareFirstPass}>Préparer le premier nettoyage avec l’assistant</button></div>{analysis && <p role="status">{analysis.current}/{analysis.total} traité(s) · {analysis.failed} échec(s){analysis.lastError ? ` · ${analysis.lastError}` : ""}</p>}</div>
               {!status?.configured && <p className="local-warning">Ajoutez votre clé OpenAI dans Paramètres pour analyser le contenu des documents.</p>}
             </>}
         </section>

@@ -314,8 +314,8 @@ export function listRemoteProjects() {
   return invoke<RemoteProject[]>("list_remote_projects");
 }
 
-export function submitOcrJob(path: string, projectId: string, sourceRelativePath?: string) {
-  return invoke<OcrJob>("submit_ocr_job", { path, projectId, sourceRelativePath });
+export function submitOcrJob(path: string, projectId: string, sourceRelativePath?: string, ocrEnabled = true) {
+  return invoke<OcrJob>("submit_ocr_job", { path, projectId, sourceRelativePath, ocrEnabled });
 }
 
 export function getOcrJob(jobId: string) {
@@ -424,8 +424,18 @@ export function cancelDraftAction(projectId: string, conversationId: string, act
   return invoke<AssistantAction>("cancel_local_assistant_action", { projectId, conversationId, actionId });
 }
 
-export function createOrganizationPlan(projectId: string, renameFiles = false) {
-  return invoke<OrganizationPlan>("create_organization_plan", { projectId, renameFiles });
+export function createOrganizationPlan(
+  projectId: string,
+  options: { rename: boolean; normalizeDates: boolean; organize: boolean; maxDepth: number | null; maxChildren: number | null },
+) {
+  return invoke<OrganizationPlan>("create_organization_plan", {
+    projectId,
+    renameFiles: options.rename,
+    normalizeDates: options.normalizeDates,
+    organize: options.organize,
+    maxDepth: options.maxDepth,
+    maxChildren: options.maxChildren,
+  });
 }
 
 export function applyOrganizationPlan(

@@ -892,6 +892,7 @@ async fn submit_ocr_job(
     path: String,
     project_id: Option<String>,
     source_relative_path: Option<String>,
+    ocr_enabled: bool,
 ) -> Result<OcrJobResponse, String> {
     let pdf_path = PathBuf::from(&path);
     if !pdf_path.is_file()
@@ -919,6 +920,7 @@ async fn submit_ocr_job(
     if let Some(source_relative_path) = source_relative_path {
         request = request.query(&[("source_relative_path", source_relative_path)]);
     }
+    request = request.query(&[("ocr_enabled", ocr_enabled)]);
     let response = request
         .send()
         .await
@@ -1531,6 +1533,10 @@ async fn create_organization_plan(
     app: AppHandle,
     project_id: String,
     rename_files: bool,
+    normalize_dates: bool,
+    organize: bool,
+    max_depth: Option<u32>,
+    max_children: Option<u32>,
 ) -> Result<OrganizationPlan, String> {
     let config = read_server_config(&app)?;
     let response = api_client(Duration::from_secs(7200))?
@@ -1539,7 +1545,13 @@ async fn create_organization_plan(
             config.server_url
         ))
         .header("X-ClairDoc-Key", &config.api_key)
-        .json(&serde_json::json!({ "rename_files": rename_files }))
+        .json(&serde_json::json!({
+            "rename_files": rename_files,
+            "normalize_dates": normalize_dates,
+            "organize": organize,
+            "max_depth": max_depth,
+            "max_children": max_children,
+        }))
         .send()
         .await
         .map_err(|error| format!("Préparation du classement impossible : {error}"))?;
@@ -1680,17 +1692,23 @@ async fn apply_organization_plan_inner(
                 .send()
                 .await
                 .map_err(|error| format!("Téléchargement du PDF OCRisé impossible : {error}"))?;
-            if !response.status().is_success() {
+            if response.status() == reqwest::StatusCode::CONFLICT
+                || response.status() == reqwest::StatusCode::NOT_FOUND
+            {
+                // A failed OCR must not silently exclude a user document from the plan.
+                fs::copy(source, destination).map(|_| ())
+            } else if !response.status().is_success() {
                 return Err(format!(
                     "La version OCRisée de {} n’est pas disponible.",
                     entry.original_filename
                 ));
+            } else {
+                let bytes = response
+                    .bytes()
+                    .await
+                    .map_err(|error| format!("Lecture du PDF OCRisé impossible : {error}"))?;
+                fs::write(destination, bytes)
             }
-            let bytes = response
-                .bytes()
-                .await
-                .map_err(|error| format!("Lecture du PDF OCRisé impossible : {error}"))?;
-            fs::write(destination, bytes)
         } else {
             fs::copy(source, destination).map(|_| ())
         };

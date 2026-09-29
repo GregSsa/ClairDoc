@@ -23,10 +23,10 @@ Application de bureau destinée à aider les utilisateurs à inventorier, recher
 - section Recherche distincte de l'Assistant : classement hybride nom/contenu/embeddings, ou tri des passages candidats par OpenAI ;
 - affichage sans extrait des résultats retrouvés uniquement par le titre ou les métadonnées, et rendu Markdown des réponses de l'Assistant ;
 - questions au LLM avec affichage des extraits sources ;
-- import récursif de tous les PDF d'un dossier ;
+- import récursif de tous les documents reconnus d'un dossier, sans sélection partielle ;
 - progression globale, pause, reprise et relance des échecs ;
 - sélection et reprise des projets créés précédemment ;
-- détection côté serveur des PDF identiques déjà traités ;
+- réutilisation des documents inchangés au même chemin, sans confondre deux fichiers identiques situés à des endroits différents ;
 - import de PDF, textes, fichiers Office, courriels EML et images ;
 - citations par page et recherche hybride ;
 - prévisualisation modifiable du classement proposé ;
@@ -115,7 +115,7 @@ Au démarrage, l'application teste le serveur configuré. S'il ne répond pas ou
 
 Dans les paramètres de ce mode, renseignez une clé API OpenAI personnelle. Elle est enregistrée côté Rust dans `local-openai.json` (permissions `0600` sous Linux), jamais dans le JavaScript. La variable d'environnement `OPENAI_API_KEY` peut aussi être utilisée ; une clé enregistrée dans l'application a priorité. Les réponses utilisent directement l'API OpenAI, sans transiter par ClairDoc Server.
 
-Dans « Ajouter », lancez l'analyse par lots de 5, 20 ou 100 documents après confirmation du coût potentiel. L'application transmet les fichiers compatibles de 10 Mo maximum à OpenAI pour extraire le texte et les métadonnées, puis crée des embeddings `text-embedding-3-small` de 256 dimensions. Le texte, les vecteurs et les relations déduites des catégories, personnes, organismes et années sont enregistrés localement. Un fichier sans texte lisible reste indexé par son nom. Les fichiers trop volumineux ou non compatibles restent aussi trouvables par nom, avec un avertissement. Les images TIFF/BMP ne sont pas analysées dans ce mode. La recherche propose similarité et tri par IA ; l'assistant utilise les passages de l'index comme contexte. Pour un PDF non analysé cité explicitement, une lecture ponctuelle jusqu'à 5 Mo reste possible.
+Dans « Ajouter », lancez l'analyse de tous les documents après confirmation du coût potentiel ; vous pouvez interrompre le traitement après le fichier en cours. L'application transmet les fichiers compatibles de 10 Mo maximum à OpenAI pour extraire le texte et les métadonnées, puis crée des embeddings `text-embedding-3-small` de 256 dimensions. Le texte, les vecteurs et les relations déduites des catégories, personnes, organismes et années sont enregistrés localement. Un fichier sans texte lisible reste indexé par son nom. Les fichiers trop volumineux ou non compatibles restent aussi trouvables par nom, avec un avertissement. Les images TIFF/BMP ne sont pas analysées dans ce mode. La recherche propose similarité et tri par IA ; l'assistant utilise les passages de l'index comme contexte. Pour un PDF non analysé cité explicitement, une lecture ponctuelle jusqu'à 5 Mo reste possible.
 
 Le mode autonome reprend les mêmes sections que le mode serveur : Projets, Documents, Recherche, Explorateur, Assistant et Ajouter. Dans l'Assistant, la conversation défile automatiquement vers le dernier message ; les documents proposés et les modifications sont résumés par un compteur, avec un détail dépliable à la demande. Ces sections partagent leur présentation, mais le traitement sous-jacent reste distinct selon la connexion au serveur.
 
@@ -123,7 +123,7 @@ Après une indexation sur ClairDoc Server, cliquez sur **Rendre disponible hors 
 
 Avec l'option d'écriture activée, l'assistant peut préparer des copies, déplacements, renommages et mises à la corbeille. Ces actions s'ajoutent à un brouillon visible dans l'Explorateur et l'Assistant ; plusieurs étapes peuvent viser le même fichier. Les originaux ne sont modifiés qu'après confirmation de l'utilisateur. Les suppressions vont dans `.clairdoc/trash`, les destinations existantes ne sont jamais écrasées et l'empreinte du fichier est vérifiée avant application. Les projets enregistrés seulement sur ClairDoc Server ne sont pas automatiquement synchronisés ; associez leur dossier au mode autonome si vous voulez le parcourir sans serveur. Le bouton « Rechercher le serveur » permet de revenir au mode serveur lorsqu'il redevient disponible.
 
-Limites actuelles du mode autonome : l'analyse OpenAI n'écrit pas de PDF OCRisé, contrairement à OCRmyPDF côté serveur ; les fichiers de plus de 10 Mo, TIFF et BMP demandent un traitement externe pour une recherche sur leur contenu. Les index locaux et ceux du serveur sont distincts. Le coût OpenAI dépend des fichiers envoyés et n'est pas estimé automatiquement ; commencez par un lot de cinq.
+Limites actuelles du mode autonome : l'analyse OpenAI n'écrit pas de PDF OCRisé, contrairement à OCRmyPDF côté serveur ; les fichiers de plus de 10 Mo, TIFF et BMP demandent un traitement externe pour une recherche sur leur contenu. Les index locaux et ceux du serveur sont distincts. Le coût OpenAI dépend des fichiers envoyés et n'est pas estimé automatiquement ; vérifiez le nombre de documents avant de confirmer l'analyse globale.
 
 L'import lit le dossier choisi et envoie les documents pris en charge au serveur pour leur traitement ; il ne déplace pas les originaux. Les conversations et les modifications de catégories ou de liens fonctionnent ensuite sur les copies et métadonnées du projet. L'assistant prépare les copies, déplacements, renommages et mises à la corbeille dans un brouillon visible dans l'Explorateur. Il peut enchaîner plusieurs actions sur le même fichier sans validation intermédiaire ; l'Explorateur montre son emplacement final prévu. L'utilisateur peut retirer les dernières étapes ou valider tout le brouillon depuis l'Explorateur ou l'Assistant ; une demande explicite de validation dans la conversation déclenche aussi la confirmation globale. L'application applique les étapes dans l'ordre et vérifie l'empreinte des fichiers avant l'application locale. Les fichiers existants ne sont pas remplacés ; les suppressions vont dans `.clairdoc/trash` du projet. En cas d'échec, les propositions restantes demeurent dans le brouillon.
 
@@ -134,9 +134,10 @@ local sur le serveur (FastEmbed, MiniLM multilingue, CPU). Le premier calcul loc
 télécharge le modèle ; relancez ensuite l'indexation des projets pour changer leur index.
 Les réponses de l'assistant et les propositions de noms IA utilisent toujours OpenAI.
 
+Après le choix du dossier, ClairDoc inclut tous les documents reconnus. L'OCR est activé par défaut en mode serveur ; l'aide « ? » explique son effet. Le premier nettoyage propose par défaut des noms cohérents, des dates `JJ-MM-AAAA` lorsqu'elles sont identifiables et des sous-dossiers simples. La profondeur et le nombre maximal de sous-dossiers directs peuvent être réglés de 1 à « Sans limite ». L'assistant reçoit une consigne préparée qui examine d'abord les noms et ne lit le contenu que si nécessaire. Pour les très grands projets, il avance par pages et doit annoncer ce qu'il reste à traiter : un seul échange ne garantit pas le nettoyage complet. Le plan de classement inclut tous les documents indexés, limite les sous-dossiers et reste modifiable avant validation. Par défaut, sa validation copie les documents et conserve les originaux.
+
 Avant de préparer un classement, l'option **Autoriser l'IA à proposer de nouveaux noms**
-permet de suggérer des noms d'après le texte. Désactivée par défaut, elle conserve les
-noms existants sauf doublons. Les chemins restent modifiables avant validation.
+permet de suggérer des noms d'après le texte seulement pour les noms ambigus. Activée par défaut pour les nouveaux projets, elle peut être désactivée afin de conserver les noms existants sauf doublons. Les chemins restent modifiables avant validation.
 L'assistant peut consulter le texte OCR d'un PDF précis tel que `e001.pdf` ; pour le
 renommer directement en conversation, activez les actions d'écriture. Le serveur doit
 avoir accès au dossier source pour effectuer la modification.

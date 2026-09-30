@@ -1263,6 +1263,7 @@ async fn send_conversation_message(
     conversation_id: String,
     question: String,
     allow_write_actions: bool,
+    names_only: bool,
 ) -> Result<AskResponse, String> {
     let config = read_server_config(&app)?;
     let response = api_client(Duration::from_secs(300))?
@@ -1273,7 +1274,8 @@ async fn send_conversation_message(
         .header("X-ClairDoc-Key", &config.api_key)
         .json(&serde_json::json!({
             "question": question,
-            "allow_write_actions": allow_write_actions
+            "allow_write_actions": allow_write_actions,
+            "names_only": names_only
         }))
         .send()
         .await
@@ -1532,6 +1534,7 @@ async fn cancel_local_assistant_action(
 async fn create_organization_plan(
     app: AppHandle,
     project_id: String,
+    names_only: bool,
     rename_files: bool,
     normalize_dates: bool,
     organize: bool,
@@ -1546,6 +1549,7 @@ async fn create_organization_plan(
         ))
         .header("X-ClairDoc-Key", &config.api_key)
         .json(&serde_json::json!({
+            "names_only": names_only,
             "rename_files": rename_files,
             "normalize_dates": normalize_dates,
             "organize": organize,

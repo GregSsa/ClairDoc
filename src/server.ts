@@ -403,12 +403,14 @@ export function sendConversationMessage(
   conversationId: string,
   question: string,
   allowWriteActions: boolean,
+  namesOnly: boolean = false,
 ) {
   return invoke<AskResult>("send_conversation_message", {
     projectId,
     conversationId,
     question,
     allowWriteActions,
+    namesOnly,
   });
 }
 
@@ -426,10 +428,11 @@ export function cancelDraftAction(projectId: string, conversationId: string, act
 
 export function createOrganizationPlan(
   projectId: string,
-  options: { rename: boolean; normalizeDates: boolean; organize: boolean; maxDepth: number | null; maxChildren: number | null },
+  options: { namesOnly: boolean; rename: boolean; normalizeDates: boolean; organize: boolean; maxDepth: number | null; maxChildren: number | null },
 ) {
   return invoke<OrganizationPlan>("create_organization_plan", {
     projectId,
+    namesOnly: options.namesOnly,
     renameFiles: options.rename,
     normalizeDates: options.normalizeDates,
     organize: options.organize,

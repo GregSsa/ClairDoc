@@ -15,6 +15,7 @@ export default function FirstPassSettings({ options, onChange, standalone = fals
   return <div className="first-pass-options">
     <h3>Premier nettoyage du projet</h3>
     <p>Tous les documents du dossier et de ses sous-dossiers seront inclus. L’assistant préparera des propositions à vérifier : aucun fichier ne sera modifié avant votre validation.</p>
+    <label className={`first-pass-choice first-pass-economy ${options.namesOnly ? "selected" : ""}`}><input type="checkbox" checked={options.namesOnly} disabled={disabled} onChange={(event) => change("namesOnly", event.target.checked)} /> <span><strong>Mode économique : utiliser uniquement les noms de fichiers</strong><small>Le contenu, les extraits et l’OCR ne seront pas consultés pour le nettoyage et le tri. Les noms ambigus resteront à vérifier.</small></span></label>
     <label className="first-pass-choice"><input type="checkbox" checked={options.ocr} disabled={disabled} onChange={(event) => change("ocr", event.target.checked)} /> {standalone ? "Lire les PDF scannés et les images avec OpenAI" : "Passer l’OCR sur les documents scannés"}</label>
     <details className="first-pass-help"><summary aria-label="Qu’est-ce que l’OCR ?">?</summary><p>{standalone ? "L’OCR transforme une image de texte en texte recherchable. Sans serveur, ClairDoc ne dispose pas d’OCRmyPDF : l’analyse visuelle peut être demandée à OpenAI après création du projet, avec votre confirmation du coût. La création seule n’envoie aucun fichier." : "L’OCR reconnaît le texte dans les PDF scannés et les images. Il permet de les rechercher et d’aider l’assistant à les comprendre. Sans OCR, les PDF déjà textuels restent lisibles ; les scans sans texte seront recherchables par leur nom uniquement."}</p></details>
     <label className="first-pass-choice"><input type="checkbox" checked={options.rename} disabled={disabled} onChange={(event) => change("rename", event.target.checked)} /> Proposer des noms clairs et cohérents</label>
@@ -34,6 +35,6 @@ export default function FirstPassSettings({ options, onChange, standalone = fals
         </select>
       </label>
     </>}
-    <small>L’assistant se basera d’abord sur les noms, et lira le contenu seulement en cas de doute. Les doublons et les dates ambiguës seront signalés, jamais supprimés automatiquement.</small>
+    <small>{options.namesOnly ? "Mode économique activé : seules les informations visibles dans les noms et les chemins seront utilisées pour ce classement." : "L’assistant se basera d’abord sur les noms, et lira le contenu seulement en cas de doute."} Les doublons et les dates ambiguës seront signalés, jamais supprimés automatiquement.</small>
   </div>;
 }

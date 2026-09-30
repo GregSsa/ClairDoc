@@ -9,6 +9,7 @@ import FolderIcon from "./FolderIcon";
 import ConversationDetails from "./ConversationDetails";
 import { defaultFirstPassOptions, firstPassPrompt, readFirstPassOptions, saveFirstPassOptions } from "./firstPass";
 import FirstPassSettings from "./FirstPassSettings";
+import FontSizeSettings from "./FontSizeSettings";
 import { useConversationAutoscroll } from "./useConversationAutoscroll";
 import {
   applyLocalAssistantAction,
@@ -1030,6 +1031,7 @@ function App() {
         conversation.id,
         submitted,
         allowAssistantActions,
+        firstPass.namesOnly,
       );
       const refreshed = await getConversation(projectId, conversation.id);
       setActiveConversation(refreshed);
@@ -1385,6 +1387,7 @@ function App() {
             <article className="settings-panel appearance-panel">
               <div className="settings-title"><span>{theme === "light" ? "☾" : "☀"}</span><div><h2>Apparence</h2><p>Choisissez le thème le plus confortable.</p></div></div>
               <div className="theme-choice"><button className={theme === "light" ? "selected" : ""} onClick={() => setTheme("light")}><span>☀</span>Clair</button><button className={theme === "dark" ? "selected" : ""} onClick={() => setTheme("dark")}><span>☾</span>Sombre</button></div>
+              <FontSizeSettings />
             </article>
           </section>
         )}

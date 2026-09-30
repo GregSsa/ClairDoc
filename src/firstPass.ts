@@ -1,4 +1,5 @@
 export type FirstPassOptions = {
+  namesOnly: boolean;
   ocr: boolean;
   rename: boolean;
   normalizeDates: boolean;
@@ -8,6 +9,7 @@ export type FirstPassOptions = {
 };
 
 export const defaultFirstPassOptions: FirstPassOptions = {
+  namesOnly: false,
   ocr: true,
   rename: true,
   normalizeDates: true,
@@ -28,6 +30,7 @@ export function readFirstPassOptions(projectId: string): FirstPassOptions {
       value === null || (Number.isInteger(value) && Number(value) >= 1 && Number(value) <= 10)
         ? value as number | null : fallback;
     return {
+      namesOnly: typeof saved.namesOnly === "boolean" ? saved.namesOnly : false,
       ocr: typeof saved.ocr === "boolean" ? saved.ocr : true,
       rename: typeof saved.rename === "boolean" ? saved.rename : true,
       normalizeDates: typeof saved.normalizeDates === "boolean" ? saved.normalizeDates : true,
@@ -48,7 +51,9 @@ export function firstPassPrompt(options: FirstPassOptions): string {
   return [
     "Effectue le premier nettoyage de ce projet entier. Prépare uniquement un brouillon de modifications : ne valide, ne supprime et ne déplace rien réellement sans mon accord explicite.",
     "Le périmètre est le projet entier, sous-dossiers inclus. Commence par inventorier les noms et l'architecture actuelle. Pour un grand projet, avance par pages/lots, garde la position de reprise et ne prétends pas avoir terminé si des documents restent à parcourir.",
-    "Utilise d'abord les noms et chemins comme indices ; lis le contenu uniquement si un nom est ambigu ou si tu as besoin de vérifier une proposition. N'invente jamais une date, une catégorie ou le contenu d'un document.",
+    options.namesOnly
+      ? "MODE ÉCONOMIQUE — NOMS UNIQUEMENT : base toutes tes propositions exclusivement sur les noms de fichiers et leurs chemins. Ne recherche, ne lis et ne demande aucun contenu, extrait, OCR ou métadonnée issue du contenu. Si un nom est ambigu, conserve-le et signale l'incertitude au lieu de consulter le document."
+      : "Utilise d'abord les noms et chemins comme indices ; lis le contenu uniquement si un nom est ambigu ou si tu as besoin de vérifier une proposition. N'invente jamais une date, une catégorie ou le contenu d'un document.",
     options.rename ? "Propose des noms de fichiers courts, descriptifs et cohérents. Préserve l'extension et le sens du nom d'origine." : "Conserve les noms des fichiers.",
     options.normalizeDates ? "Dans les noms modifiés, convertis les dates identifiables au format JJ-MM-AAAA. Si une date est ambiguë, garde-la telle quelle et signale-la." : "Ne modifie pas le format des dates dans les noms.",
     options.organize ? `Propose des sous-dossiers simples selon les noms et le contexte, avec ${depth} et ${children}. Évite les dossiers à un seul document et les catégories redondantes.` : "Conserve l'organisation actuelle des sous-dossiers.",

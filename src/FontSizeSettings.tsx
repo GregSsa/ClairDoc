@@ -14,11 +14,10 @@ function savedFontSize(): FontSize {
   return choices.some((choice) => choice.value === saved) ? saved as FontSize : "standard";
 }
 
-const initialFontSize = savedFontSize();
-document.documentElement.dataset.fontSize = initialFontSize;
+document.documentElement.dataset.fontSize = savedFontSize();
 
 export default function FontSizeSettings() {
-  const [fontSize, setFontSize] = useState<FontSize>(initialFontSize);
+  const [fontSize, setFontSize] = useState<FontSize>(() => savedFontSize());
 
   useEffect(() => {
     document.documentElement.dataset.fontSize = fontSize;

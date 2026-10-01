@@ -10,6 +10,8 @@ import ConversationDetails from "./ConversationDetails";
 import { defaultFirstPassOptions, firstPassPrompt, readFirstPassOptions, saveFirstPassOptions } from "./firstPass";
 import FirstPassSettings from "./FirstPassSettings";
 import FontSizeSettings from "./FontSizeSettings";
+import HelpTip from "./HelpTip";
+import DocumentAnalysisStatus from "./DocumentAnalysisStatus";
 import { useConversationAutoscroll } from "./useConversationAutoscroll";
 import {
   applyLocalAssistantAction,
@@ -678,7 +680,12 @@ function App() {
   }
 
   function prepareFirstPass() {
-    setQuestion(firstPassPrompt(firstPass));
+    const paths = batch.status === "completed"
+      ? batch.files.map((file) => file.relativePath)
+      : library.status === "ready"
+        ? library.data.documents.map((document) => document.sourceRelativePath)
+        : [];
+    setQuestion(firstPassPrompt(firstPass, paths));
     setAllowAssistantActions(true);
     setActiveView("assistant");
   }
@@ -1240,10 +1247,10 @@ function App() {
                   <div className="document-browser">
                     <div className="browser-summary"><strong>{filteredDocuments.length} document(s)</strong><span>{libraryData.relationships.length} lien(s) détecté(s)</span></div>
                     <div className="document-table" role="table" aria-label="Documents du projet">
-                      <div className="document-row table-head" role="row"><span>Nom</span><span>Catégorie</span><span>Date</span><span>Relations</span><span>État</span></div>
+                      <div className="document-row table-head" role="row"><span>Nom</span><span>Catégorie</span><span>Date</span><span>Relations</span><span className="heading-with-help">État <HelpTip label="Comprendre l’état d’analyse d’un document">L’état indique si ClairDoc a lu le contenu du document, s’il utilise seulement son nom, ou si l’analyse reste à lancer.</HelpTip></span></div>
                       {filteredDocuments.map((document) => {
                         const relations = libraryData.relationships.filter((link) => link.sourceJobId === document.jobId || link.targetJobId === document.jobId);
-                        return <article className="document-row" role="row" key={document.jobId}><span className="document-name"><b>{document.name}</b><small>{document.sourceRelativePath}</small>{document.textWarning && <small>{document.textWarning}</small>}</span><span><i className="category-chip">{document.category}</i></span><span>{document.documentDate ?? "—"}</span><span>{relations.length ? <span className="link-count">⌁ {relations.length}</span> : "—"}</span><span className={`status-chip ${document.status}`}>{document.status === "indexed_name" ? "Indexé · nom seul" : document.status === "indexed" ? "Indexé" : document.textWarning ? "Sans texte · à indexer" : "Prêt"}</span></article>;
+                        return <article className="document-row" role="row" key={document.jobId}><span className="document-name"><b>{document.name}</b><small>{document.sourceRelativePath}</small>{document.textWarning && <small>{document.textWarning}</small>}</span><span><i className="category-chip">{document.category}</i></span><span>{document.documentDate ?? "—"}</span><span>{relations.length ? <span className="link-count">⌁ {relations.length}</span> : "—"}</span><DocumentAnalysisStatus status={document.status} analyzed={document.analyzed} /></article>;
                       })}
                     </div>
                     {filteredDocuments.length === 0 && <div className="no-results">Aucun document ne correspond à ces filtres.</div>}
@@ -1410,7 +1417,7 @@ function App() {
           )}
 
           {scan.status === "scanning" && (
-            <div className="empty-state scanning-state"><div className="spinner" aria-hidden="true" /><h2>Analyse du dossier en cours…</h2><p className="path-label">{scan.path}</p></div>
+              <div className="empty-state scanning-state"><div className="spinner" aria-hidden="true" /><div className="heading-with-help"><h2>Analyse du dossier en cours…</h2><HelpTip label="Que fait cette analyse du dossier ?">ClairDoc compte les fichiers, reconnaît leurs formats et parcourt les sous-dossiers. À cette étape, aucun fichier n’est déplacé, renommé ou supprimé.</HelpTip></div><p className="path-label">{scan.path}</p></div>
           )}
 
           {scan.status === "error" && (
@@ -1431,7 +1438,7 @@ function App() {
               </div>
 
               <div className="file-breakdown">
-                <h3>Documents reconnus</h3>
+                <div className="heading-with-help"><h3>Documents reconnus</h3><HelpTip label="Quels documents sont reconnus ?">ClairDoc repère les PDF, images et documents bureautiques compatibles. Cette reconnaissance vérifie le type des fichiers sans modifier les originaux.</HelpTip></div>
                 <div className="breakdown-row"><span>Documents PDF</span><strong>{formatNumber(scan.summary.pdfCount)}</strong></div>
                 <div className="breakdown-row"><span>Images</span><strong>{formatNumber(scan.summary.imageCount)}</strong></div>
                 <div className="breakdown-row"><span>Documents bureautiques</span><strong>{formatNumber(scan.summary.officeCount)}</strong></div>
@@ -1452,7 +1459,7 @@ function App() {
               {project.status === "ready" && (
                 <>
                 <section className="ocr-panel" aria-labelledby="ocr-title">
-                  <div><p className="success-label">Projet prêt · {project.project.name}</p><h3 id="ocr-title">Importer les documents du dossier</h3><p>PDF, textes, Office, courriels et images sont inclus. Les fichiers identiques ne sont pas retraités.</p></div>
+                  <div><p className="success-label">Projet prêt · {project.project.name}</p><div className="heading-with-help"><h3 id="ocr-title">Importer les documents du dossier</h3><HelpTip label="Que fait l’importation ?">L’importation enregistre chaque document dans le projet et, si l’OCR est activé, extrait le texte des scans. Les originaux restent à leur emplacement.</HelpTip></div><p>PDF, textes, Office, courriels et images sont inclus. Les fichiers identiques ne sont pas retraités.</p></div>
                   {batch.status === "idle" && <div className="import-actions"><button className="primary-button" onClick={() => void importAllDocuments()}>Importer tous les documents</button></div>}
                   {batch.status === "discovering" && <div className="ocr-progress"><span className="mini-spinner" /> Recherche des documents…</div>}
                   {batch.status === "uploading" && (
@@ -1485,7 +1492,7 @@ function App() {
                 {documentsReady && (
                   <section className="rag-panel" aria-labelledby="rag-title">
                     <div className="rag-heading">
-                      <div><p className="success-label">Recherche intelligente</p><h3 id="rag-title">Interroger les documents</h3><p>L’index et les embeddings sont conservés localement sur le serveur.</p></div>
+                      <div><p className="success-label">Recherche intelligente</p><div className="heading-with-help"><h3 id="rag-title">Interroger les documents</h3><HelpTip label="À quoi sert l’indexation ?">L’indexation prépare de petits repères de recherche pour retrouver les passages utiles. Elle ne modifie pas les documents et permet à l’assistant de citer les bonnes sources.</HelpTip></div><p>L’index et les embeddings sont conservés localement sur le serveur.</p></div>
                       {!['estimating', 'estimate', 'indexing'].includes(rag.status) && <button className="primary-button" onClick={buildIndex}>{indexResult ? "Mettre à jour l’index" : "Estimer l’indexation"}</button>}
                     </div>
                     {rag.status === "estimating" && <div className="ocr-progress"><span className="mini-spinner" /> Estimation du volume…</div>}

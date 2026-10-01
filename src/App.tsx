@@ -12,6 +12,7 @@ import FirstPassSettings from "./FirstPassSettings";
 import FontSizeSettings from "./FontSizeSettings";
 import HelpTip from "./HelpTip";
 import DocumentAnalysisStatus from "./DocumentAnalysisStatus";
+import AssistantSettingsPanel, { readAssistantSettings, saveAssistantSettings } from "./AssistantSettingsPanel";
 import { useConversationAutoscroll } from "./useConversationAutoscroll";
 import {
   applyLocalAssistantAction,
@@ -227,7 +228,8 @@ function App() {
   const [draftError, setDraftError] = useState("");
   const [draftNotice, setDraftNotice] = useState("");
   const [assistantError, setAssistantError] = useState("");
-  const [allowAssistantActions, setAllowAssistantActions] = useState(() => localStorage.getItem("clairdoc-allow-metadata-actions") === "true");
+  const [assistantSettings, setAssistantSettings] = useState(readAssistantSettings);
+  const [assistantSettingsOpen, setAssistantSettingsOpen] = useState(false);
   const [sourceAccess, setSourceAccess] = useState<{ accessible: boolean; reason: string } | null>(null);
   const conversationRef = useConversationAutoscroll(activeConversation?.id, activeConversation?.messages.length ?? 0, !!pendingQuestion, activeView === "assistant");
   const connected = connection.status === "connected";
@@ -280,9 +282,7 @@ function App() {
     localStorage.setItem("clairdoc-theme", theme);
   }, [theme]);
 
-  useEffect(() => {
-    localStorage.setItem("clairdoc-allow-metadata-actions", String(allowAssistantActions));
-  }, [allowAssistantActions]);
+  useEffect(() => { saveAssistantSettings(assistantSettings); }, [assistantSettings]);
 
   useEffect(() => {
     if (project.status !== "ready" || !connected) {
@@ -686,7 +686,7 @@ function App() {
         ? library.data.documents.map((document) => document.sourceRelativePath)
         : [];
     setQuestion(firstPassPrompt(firstPass, paths));
-    setAllowAssistantActions(true);
+    setAssistantSettings((current) => ({ ...current, namesOnly: firstPass.namesOnly, allowRename: firstPass.rename, allowMove: firstPass.organize, includeProjectTree: true }));
     setActiveView("assistant");
   }
 
@@ -1037,8 +1037,11 @@ function App() {
         projectId,
         conversation.id,
         submitted,
-        allowAssistantActions,
-        firstPass.namesOnly,
+        assistantSettings.allowRename || assistantSettings.allowMove,
+        assistantSettings.namesOnly,
+        assistantSettings.allowRename,
+        assistantSettings.allowMove,
+        assistantSettings.includeProjectTree,
       );
       const refreshed = await getConversation(projectId, conversation.id);
       setActiveConversation(refreshed);
@@ -1309,7 +1312,8 @@ function App() {
                   </div>
                 </aside>
                 <div className="chat-card">
-                  <div className="chat-intro"><span>✦</span><div><strong>Assistant de {project.project.name}</strong><p>Demandez une date, un montant, un organisme ou une synthèse.</p></div></div>
+                  <div className="chat-intro"><span>✦</span><div><strong>Assistant de {project.project.name}</strong><p>Demandez une date, un montant, un organisme ou une synthèse.</p></div><button type="button" className="assistant-settings-button" aria-expanded={assistantSettingsOpen} aria-controls="assistant-settings-panel" onClick={() => setAssistantSettingsOpen((value) => !value)}>⚙ Réglages</button></div>
+                  {assistantSettingsOpen && <AssistantSettingsPanel settings={assistantSettings} onChange={setAssistantSettings} />}
                   {project.project.sourceRoot && <div className="source-access-note"><strong>Brouillon avant toute modification</strong><p>L’assistant prépare les changements sans toucher aux fichiers. Vérifiez l'ébauche dans l'Explorateur, puis demandez-lui de valider ou utilisez le bouton ci-dessous.{sourceAccess && !sourceAccess.accessible ? " Le serveur utilise les copies importées pour consulter les documents." : ""}</p></div>}
                   {draft && draft.actions.length > 0 && <div className="assistant-draft-banner"><span><strong>{draft.actions.length} modification(s) en brouillon</strong><small>Aucun fichier local modifié pour le moment.</small></span><button type="button" className="secondary-button" disabled={!!draftApplying} onClick={() => setActiveView("relations")}>Voir dans l'Explorateur</button><button type="button" className="primary-button" disabled={!!draftApplying} onClick={() => void applyDraft(project.project.id)}>{draftApplying ? `Application ${draftApplying.current}/${draftApplying.total}…` : "Valider le brouillon"}</button></div>}
                   {draftError && <div className="error-result" role="alert"><p>{draftError}</p></div>}
@@ -1329,8 +1333,7 @@ function App() {
                   </div>
                   {assistantError && <div className="error-result"><p>{assistantError}</p></div>}
                   <form className="chat-composer" onSubmit={ask}>
-                    <label className="assistant-permission"><input type="checkbox" checked={allowAssistantActions} onChange={(event) => setAllowAssistantActions(event.target.checked)} /><span>Autoriser les changements de catégories, liens et mémoire. Les fichiers restent en brouillon jusqu'à validation.</span></label>
-                    <textarea value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Posez une question ou demandez une action…" minLength={3} maxLength={4000} required />
+                    <textarea value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Posez une question ou demandez une action…" minLength={3} required />
                     <button className="primary-button" disabled={assistantSending || conversationLoading}>{assistantSending ? "…" : "Envoyer"}</button>
                   </form>
                 </div>
@@ -1513,7 +1516,7 @@ function App() {
                         <p className="index-summary">{indexResult.chunksIndexed} extraits prêts · {indexResult.documentsIndexed} document(s) indexé(s) · {indexResult.documentsReused} réutilisé(s) · {indexResult.documentsNameOnly ?? 0} indexé(s) par nom uniquement</p>
                         <form className="question-form" onSubmit={ask}>
                           <label htmlFor="document-question">Votre question</label>
-                          <textarea id="document-question" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Exemple : quelle est la date de la dernière facture ?" minLength={3} maxLength={4000} required />
+                          <textarea id="document-question" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Exemple : quelle est la date de la dernière facture ?" minLength={3} required />
                           <button className="primary-button" disabled={rag.status === "asking"}>{rag.status === "asking" ? "Recherche…" : "Poser la question"}</button>
                         </form>
                       </>

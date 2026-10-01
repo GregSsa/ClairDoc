@@ -672,6 +672,32 @@ fn matching_documents(
     Ok((names, selected))
 }
 
+fn compact_project_tree(paths: impl Iterator<Item = String>) -> String {
+    let mut paths = paths
+        .filter(|path| !path.starts_with(".clairdoc/"))
+        .collect::<Vec<_>>();
+    paths.sort_by_key(|path| path.to_lowercase());
+    paths.dedup();
+    let total = paths.len();
+    let mut output = format!("./ — {total} document(s)\n");
+    for (index, path) in paths.into_iter().enumerate() {
+        let line = format!(
+            "{} {path}\n",
+            if index + 1 == total {
+                "└─"
+            } else {
+                "├─"
+            }
+        );
+        if output.chars().count() + line.chars().count() > 8_000 {
+            output.push_str("[… arborescence tronquée : poursuivre avec l’inventaire paginé.]\n");
+            break;
+        }
+        output.push_str(&line);
+    }
+    output
+}
+
 #[tauri::command]
 pub async fn local_send_message(
     app: AppHandle,
@@ -680,10 +706,13 @@ pub async fn local_send_message(
     question: String,
     allow_actions: bool,
     names_only: bool,
+    allow_rename_actions: bool,
+    allow_move_actions: bool,
+    include_project_tree: bool,
 ) -> Result<LocalAnswer, String> {
     let question = question.trim().to_string();
-    if question.is_empty() || question.len() > 12000 {
-        return Err("Question vide ou trop longue.".to_string());
+    if question.is_empty() {
+        return Err("La question est vide.".to_string());
     }
     let (project, history) = {
         let _guard = state_lock()?;
@@ -709,6 +738,8 @@ pub async fn local_send_message(
         index::ranked(&app, &project_id, &question, 8).await?
     };
     let indexed = index::documents(&app, &project_id)?;
+    let project_tree = include_project_tree
+        .then(|| compact_project_tree(indexed.iter().map(|item| item.relative_path.clone())));
     let mut candidates = indexed
         .iter()
         .filter(|item| question.to_lowercase().contains(&item.name.to_lowercase()))
@@ -788,7 +819,7 @@ pub async fn local_send_message(
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let mut context = format!("Projet : {}.\n\nFichiers correspondant aux mots de la question (leurs noms ne prouvent pas leur contenu) :\n{}\n\nDocuments candidats et identifiants :\n{}\n\nPassages indexés pertinents :\n{}\n\nModifications déjà prévues :\n{}", project.name, if names.is_empty() { "Aucun" } else { &names }, if document_list.is_empty() { "Aucun" } else { &document_list }, if passages.is_empty() { "Aucun" } else { &passages }, if pending.is_empty() { "Aucune" } else { &pending });
+    let mut context = format!("Projet : {}.\n\n{}Fichiers correspondant aux mots de la question (leurs noms ne prouvent pas leur contenu) :\n{}\n\nDocuments candidats et identifiants :\n{}\n\nPassages indexés pertinents :\n{}\n\nModifications déjà prévues :\n{}", project.name, project_tree.as_ref().map(|tree| format!("Arborescence actuelle du projet :\n{tree}\n")).unwrap_or_default(), if names.is_empty() { "Aucun" } else { &names }, if document_list.is_empty() { "Aucun" } else { &document_list }, if passages.is_empty() { "Aucun" } else { &passages }, if pending.is_empty() { "Aucune" } else { &pending });
     if pdf.is_some() {
         context.push_str("\nLe PDF joint est le seul document dont tu peux examiner le contenu dans cette réponse.");
     }
@@ -822,9 +853,9 @@ pub async fn local_send_message(
         },"required":["answer","actions"]
     }});
     let permission = if allow_actions {
-        "Tu peux préparer des propositions de modification sans les exécuter ; l'utilisateur validera le brouillon."
+        format!("Tu peux préparer des propositions sans les exécuter ; l'utilisateur validera le brouillon. Renommage autorisé : {allow_rename_actions}. Déplacement ou copie autorisé : {allow_move_actions}. La suppression n'est pas autorisée depuis ce panneau.")
     } else {
-        "Aucune modification de fichier n'est autorisée : actions doit rester vide."
+        "Aucune modification de fichier n'est autorisée : actions doit rester vide.".to_string()
     };
     let access_rule = if names_only {
         "Mode économique strict : utilise exclusivement les noms et chemins fournis. Aucun contenu, extrait, résumé, OCR ou historique antérieur n'est disponible ni autorisé. Un nom ambigu doit rester inchangé et être signalé."
@@ -855,18 +886,39 @@ pub async fn local_send_message(
     let plan: AssistantPlan =
         serde_json::from_str(&response_text(&body).ok_or("OpenAI n'a renvoyé aucun texte.")?)
             .map_err(|error| format!("Réponse structurée invalide : {error}"))?;
-    let (accepted, rejected) =
-        if allow_actions && !plan.actions.is_empty() && project.source_root.is_some() {
+    let mut permission_rejections = Vec::new();
+    let permitted_actions = plan
+        .actions
+        .into_iter()
+        .filter(|action| {
+            let allowed = match action.tool.as_str() {
+                "rename_document" => allow_rename_actions,
+                "move_document" | "copy_document" => allow_move_actions,
+                "delete_document" => false,
+                _ => false,
+            };
+            if !allowed {
+                permission_rejections.push(format!(
+                    "{} refusé par les réglages de l’assistant",
+                    action.tool
+                ));
+            }
+            allowed
+        })
+        .collect::<Vec<_>>();
+    let (accepted, mut rejected) =
+        if allow_actions && !permitted_actions.is_empty() && project.source_root.is_some() {
             actions::stage(
                 &app,
                 &project_id,
                 &conversation_id,
-                plan.actions,
+                permitted_actions,
                 &allowed_ids,
             )?
         } else {
             (Vec::new(), Vec::new())
         };
+    rejected.extend(permission_rejections);
     let mut answer = plan.answer;
     if !accepted.is_empty() {
         answer.push_str(&format!("\n\n{} modification(s) ajoutée(s) au brouillon. Rien n'a encore été modifié sur le disque.", accepted.len()));

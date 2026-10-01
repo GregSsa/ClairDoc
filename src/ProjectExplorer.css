@@ -4,13 +4,13 @@
 .explorer-breadcrumbs > span { min-width: 0; display: inline-flex; align-items: center; gap: 7px; }
 .explorer-breadcrumbs button { max-width: 180px; overflow: hidden; text-overflow: ellipsis; border: 0; color: #246d5b; background: none; font-weight: 700; cursor: pointer; white-space: nowrap; }
 .explorer-breadcrumbs select { max-width: 55px; border: 0; color: #246d5b; background: transparent; cursor: pointer; }
-.explorer-refresh, .explorer-actions button, .explorer-pagination button, .explorer-more, .explorer-selection button, .explorer-link-filter button { min-height: 38px; padding: 7px 11px; border: 1px solid #cddbd4; border-radius: 9px; color: #285f50; background: #f7faf8; font-weight: 700; cursor: pointer; }
+.explorer-refresh, .explorer-actions button, .explorer-pagination button, .explorer-more, .explorer-selection button, .explorer-link-filter button { min-height: 38px; height: auto; padding: 8px 11px; border: 1px solid #cddbd4; border-radius: 9px; color: #285f50; background: #f7faf8; font-weight: 700; line-height: 1.3; cursor: pointer; }
 .explorer-refresh:hover, .explorer-actions button:hover:not(:disabled), .explorer-pagination button:hover:not(:disabled), .explorer-more:hover, .explorer-selection button:hover:not(:disabled) { border-color: #83b3a2; background: #eef7f2; }
 .explorer-actions button:disabled, .explorer-pagination button:disabled, .explorer-selection button:disabled { opacity: .52; cursor: not-allowed; }
-.explorer-actions .danger { color: #985448; border-color: #eaccc7; background: #fff8f7; }
+.explorer-actions .danger, .explorer-selection .danger { color: #985448; border-color: #eaccc7; background: #fff8f7; }
 .explorer-toolbar { display: grid; grid-template-columns: minmax(250px, 1fr) minmax(200px, 260px); gap: 14px; padding: 18px 20px; }
 .explorer-toolbar label { display: grid; gap: 7px; color: #5c7067; font-size: calc(12px * var(--font-scale)); font-weight: 700; }
-.explorer-toolbar input, .explorer-toolbar select { width: 100%; min-width: 0; height: 43px; padding: 0 12px; border: 1px solid #d6e0da; border-radius: 10px; color: #243e34; background: #fff; font-size: calc(14px * var(--font-scale)); }
+.explorer-toolbar input, .explorer-toolbar select { width: 100%; min-width: 0; min-height: 43px; height: auto; padding: 9px 12px; border: 1px solid #d6e0da; border-radius: 10px; color: #243e34; background: #fff; font-size: calc(14px * var(--font-scale)); }
 .explorer-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 20px 15px; color: #596d64; font-size: calc(13px * var(--font-scale)); }
 .explorer-actions > div, .explorer-selection > div:last-child { display: flex; flex-wrap: wrap; gap: 8px; }
 .explorer-link-filter { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 20px 16px; padding: 10px 12px; border-radius: 10px; color: #286250; background: #eaf6ef; font-size: calc(13px * var(--font-scale)); }
@@ -46,9 +46,9 @@
 .explorer-row strong, .explorer-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .explorer-row strong { font-size: calc(14px * var(--font-scale)); }
 .explorer-row small { color: #73847b; font-size: calc(12px * var(--font-scale)); }
-.explorer-file-icon { --icon-color: #4b7b6c; position: relative; width: 40px; height: 40px; flex: none; display: grid; place-items: center; border-radius: 10px; color: var(--icon-color); background: #e9f2ec; }
+.explorer-file-icon { --icon-color: #4b7b6c; position: relative; width: 44px; height: 44px; flex: none; display: grid; place-items: center; overflow: hidden; border-radius: 10px; color: var(--icon-color); background: #e9f2ec; }
 .explorer-file-icon svg { width: 27px; height: 27px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linejoin: round; }
-.explorer-file-icon > span { position: absolute; right: 2px; bottom: 2px; min-width: 25px; padding: 1px 2px; border-radius: 3px; color: #fff; background: var(--icon-color); text-align: center; font-size: calc(8px * var(--font-scale)); font-weight: 900; letter-spacing: .02em; }
+.explorer-file-icon > span { position: absolute; right: 2px; bottom: 2px; min-width: 25px; max-width: calc(100% - 4px); padding: 1px 2px; overflow: hidden; border-radius: 3px; color: #fff; background: var(--icon-color); text-align: center; font-size: min(calc(8px * var(--font-scale)), 12px); font-weight: 900; line-height: 1.15; letter-spacing: .02em; }
 .explorer-file-icon.folder { --icon-color: #aa7526; background: #fff2d7; }
 .explorer-file-icon.folder svg { fill: currentColor; stroke: none; }
 .explorer-file-icon.pdf { --icon-color: #b44442; background: #fcebea; }
@@ -97,4 +97,4 @@
 [data-theme="dark"] .explorer-draft-folders button { color: #f2dba9; border-color: #685634; background: #3d3222; }
 [data-theme="dark"] .explorer-row.planned, [data-theme="dark"] .explorer-row.planned:hover { background: #373020; }
 [data-theme="dark"] .explorer-error { color: #ffbcb3; background: #3b2523; }
-@media (max-width: 760px) { .explorer-toolbar { grid-template-columns: 1fr; } .explorer-actions, .explorer-selection { align-items: flex-start; flex-direction: column; } .explorer-topline { align-items: flex-start; flex-direction: column; } }
+@media (max-width: 900px) { .explorer-toolbar { grid-template-columns: 1fr; } .explorer-actions, .explorer-selection { align-items: flex-start; flex-direction: column; } .explorer-topline { align-items: flex-start; flex-direction: column; } .explorer-selection > div:last-child { width: 100%; } }

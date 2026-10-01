@@ -294,6 +294,14 @@ export function removeEmptyProjectDirectory(rootPath: string, relativePath: stri
   return invoke<void>("remove_empty_project_directory", { rootPath, relativePath });
 }
 
+export function renameProjectFile(rootPath: string, relativePath: string, newName: string) {
+  return invoke<string>("rename_project_file", { rootPath, relativePath, newName });
+}
+
+export function trashProjectFile(rootPath: string, relativePath: string) {
+  return invoke<void>("trash_project_file", { rootPath, relativePath });
+}
+
 export function openProjectDirectory(rootPath: string, relativePath: string) {
   return invoke<void>("open_project_directory", { rootPath, relativePath });
 }
@@ -404,6 +412,9 @@ export function sendConversationMessage(
   question: string,
   allowWriteActions: boolean,
   namesOnly: boolean = false,
+  allowRenameActions: boolean = true,
+  allowMoveActions: boolean = true,
+  includeProjectTree: boolean = true,
 ) {
   return invoke<AskResult>("send_conversation_message", {
     projectId,
@@ -411,6 +422,9 @@ export function sendConversationMessage(
     question,
     allowWriteActions,
     namesOnly,
+    allowRenameActions,
+    allowMoveActions,
+    includeProjectTree,
   });
 }
 

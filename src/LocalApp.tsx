@@ -10,6 +10,7 @@ import FirstPassSettings from "./FirstPassSettings";
 import FontSizeSettings from "./FontSizeSettings";
 import HelpTip from "./HelpTip";
 import DocumentAnalysisStatus from "./DocumentAnalysisStatus";
+import AssistantSettingsPanel, { readAssistantSettings, saveAssistantSettings } from "./AssistantSettingsPanel";
 import { useConversationAutoscroll } from "./useConversationAutoscroll";
 import { openProjectFile, openProjectFolder, type Conversation, type ConversationSummary, type DocumentLibrary, type DocumentSearchResult, type LibraryDocument, type ProjectDraft, type RemoteProject } from "./server";
 import "./LocalApp.css";
@@ -52,7 +53,8 @@ export default function LocalApp({ serverUrl, onRetryServer }: { serverUrl: stri
   const [importNotice, setImportNotice] = useState("");
   const [draft, setDraft] = useState<ProjectDraft | null>(null);
   const [draftApplying, setDraftApplying] = useState<{current:number;total:number} | null>(null);
-  const [allowActions, setAllowActions] = useState(() => localStorage.getItem("clairdoc-local-allow-actions") === "true");
+  const [assistantSettings, setAssistantSettings] = useState(readAssistantSettings);
+  const [assistantSettingsOpen, setAssistantSettingsOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [theme, setTheme] = useState<"light" | "dark">(() => localStorage.getItem("clairdoc-theme") === "dark" ? "dark" : "light");
@@ -63,7 +65,7 @@ export default function LocalApp({ serverUrl, onRetryServer }: { serverUrl: stri
     localStorage.setItem("clairdoc-theme", theme);
   }, [theme]);
 
-  useEffect(() => { localStorage.setItem("clairdoc-local-allow-actions", String(allowActions)); }, [allowActions]);
+  useEffect(() => { saveAssistantSettings(assistantSettings); }, [assistantSettings]);
 
   useEffect(() => {
     setFirstPass(project ? readFirstPassOptions(project.id) : { ...defaultFirstPassOptions });
@@ -172,7 +174,7 @@ export default function LocalApp({ serverUrl, onRetryServer }: { serverUrl: stri
 
   function prepareFirstPass() {
     setQuestion(firstPassPrompt(firstPass, library?.documents.map((item) => item.sourceRelativePath) ?? []));
-    setAllowActions(true);
+    setAssistantSettings((current) => ({ ...current, namesOnly: firstPass.namesOnly, allowRename: firstPass.rename, allowMove: firstPass.organize, includeProjectTree: true }));
     setView("assistant");
   }
 
@@ -238,7 +240,7 @@ export default function LocalApp({ serverUrl, onRetryServer }: { serverUrl: stri
     const submitted = question.trim(); setQuestion(""); setPending(submitted); setBusy(true); setError("");
     try {
       const active = conversation ?? await invoke<Conversation>("local_create_conversation", { projectId: project.id });
-      await invoke("local_send_message", { projectId: project.id, conversationId: active.id, question: submitted, allowActions: allowActions && !!project.sourceRoot, namesOnly: firstPass.namesOnly });
+      await invoke("local_send_message", { projectId: project.id, conversationId: active.id, question: submitted, allowActions: (assistantSettings.allowRename || assistantSettings.allowMove) && !!project.sourceRoot, namesOnly: assistantSettings.namesOnly, allowRenameActions: assistantSettings.allowRename, allowMoveActions: assistantSettings.allowMove, includeProjectTree: assistantSettings.includeProjectTree });
       setConversation(await invoke<Conversation>("local_get_conversation", { projectId: project.id, conversationId: active.id }));
       setConversations(await invoke<ConversationSummary[]>("local_list_conversations", { projectId: project.id }));
       if (project.sourceRoot) setDraft(await invoke<ProjectDraft>("local_get_draft", { projectId: project.id }));
@@ -419,7 +421,7 @@ export default function LocalApp({ serverUrl, onRetryServer }: { serverUrl: stri
         {!project ? <div className="blank-panel"><h2>Aucun projet sélectionné</h2><button className="secondary-button" onClick={() => setView("home")}>Choisir un projet</button></div>
           : !project.sourceRoot && !project.serverProjectId ? <div className="blank-panel"><FolderIcon /><h2>Associez un dossier</h2><button className="primary-button" onClick={() => void attachFolder()}>Choisir le dossier</button></div>
           : <><div className="relation-view-switch" role="group" aria-label="Mode de l’explorateur">{project.sourceRoot && <button type="button" className={relationView === "folders" ? "active" : ""} onClick={() => setRelationView("folders")}>Dossiers</button>}<button type="button" className={relationView === "links" ? "active" : ""} onClick={() => setRelationView("links")}>Relations</button></div>
-            {relationView === "folders" && project.sourceRoot ? <ProjectExplorer key={`${project.id}-${catalog?.total ?? 0}`} projectName={project.name} rootPath={project.sourceRoot} library={library} draft={draft} draftApplying={draftApplying} draftError={error} draftNotice="" onApplyDraft={() => void applyDraft()} onRemoveDraftItem={(conversationId,actionId) => void removeDraftAction(conversationId,actionId)} />
+            {relationView === "folders" && project.sourceRoot ? <ProjectExplorer key={`${project.id}-${catalog?.total ?? 0}`} projectName={project.name} rootPath={project.sourceRoot} library={library} draft={draft} draftApplying={draftApplying} draftError={error} draftNotice="" onApplyDraft={() => void applyDraft()} onRemoveDraftItem={(conversationId,actionId) => void removeDraftAction(conversationId,actionId)} onFilesChanged={refreshLibrary} />
               : <><div className="relation-toolbar"><input type="search" value={relationSearch} onChange={(event) => setRelationSearch(event.target.value)} placeholder="Rechercher une personne, un organisme…" /><select value={focusDocument} onChange={(event) => setFocusDocument(event.target.value)}><option value="Tous">Tous les documents</option>{library?.documents.map((item) => <option value={item.jobId} key={item.jobId}>{item.name}</option>)}</select><select value={relationKind} onChange={(event) => setRelationKind(event.target.value)}><option value="Tous">Tous les types de liens</option><option value="organization">Organisme</option><option value="person">Personne</option><option value="category">Catégorie</option><option value="year">Année</option></select></div>
                 {!library ? <div className="blank-panel"><span className="mini-spinner" /><p>Construction de l’arbre…</p></div> : <div className="relation-canvas">
                   <div className="tree-root"><span className="tree-root-icon"><FolderIcon /></span><div><strong>{project.name}</strong><small>{relationData.groups.reduce((sum, [, items]) => sum + items.length, 0)} document(s) · {relationData.relationships.length} lien(s) affiché(s)</small></div></div>
@@ -434,13 +436,14 @@ export default function LocalApp({ serverUrl, onRetryServer }: { serverUrl: stri
       {view === "assistant" && <section className="assistant-view"><div className="page-heading compact"><div><p className="eyebrow">Assistant documentaire</p><h1>Posez une question à vos documents</h1><p>Les réponses restent limitées au projet actif et affichent leurs sources.</p></div></div>
         {!project ? <div className="blank-panel"><h2>Aucun projet sélectionné</h2><button className="secondary-button" onClick={() => setView("home")}>Choisir un projet</button></div>
           : <div className="assistant-layout"><aside className="conversation-sidebar"><button className="primary-button new-conversation" onClick={() => void newConversation()}>+ Nouvelle conversation</button><div className="conversation-list">{conversations.map((item) => <div className={`conversation-item ${conversation?.id === item.id ? "active" : ""}`} key={item.id}><button onClick={() => void selectConversation(item.id)}><strong>{item.title}</strong><small>{item.messageCount} message(s)</small></button><button className="conversation-delete" aria-label={`Supprimer ${item.title}`} onClick={() => void removeConversation(item.id)}>×</button></div>)}</div></aside>
-            <div className="chat-card"><div className="chat-intro"><span>✦</span><div><strong>Assistant de {project.name}</strong><p>Demandez une date, un montant, un organisme ou une synthèse.</p></div></div>
+            <div className="chat-card"><div className="chat-intro"><span>✦</span><div><strong>Assistant de {project.name}</strong><p>Demandez une date, un montant, un organisme ou une synthèse.</p></div><button type="button" className="assistant-settings-button" aria-expanded={assistantSettingsOpen} aria-controls="assistant-settings-panel" onClick={() => setAssistantSettingsOpen((value) => !value)}>⚙ Réglages</button></div>
+              {assistantSettingsOpen && <AssistantSettingsPanel settings={assistantSettings} onChange={setAssistantSettings} />}
               {project.sourceRoot && <div className="source-access-note"><strong>Brouillon avant toute modification</strong><p>L’assistant prépare les changements sans toucher aux fichiers. Vérifiez l’ébauche dans l’Explorateur, puis utilisez le bouton de validation.</p></div>}
               {project.serverProjectId && !project.sourceRoot && <div className="source-access-note"><strong>Index conservé sur ce PC</strong><p>L’assistant peut consulter les passages copiés. Les fichiers originaux restent sur le serveur et ne peuvent pas être ouverts ou modifiés ici.</p></div>}
               {!!draft?.actions.length && <div className="assistant-draft-banner"><span><strong>{draft.actions.length} modification(s) en brouillon</strong><small>Aucun fichier local modifié pour le moment.</small></span><button type="button" className="secondary-button" onClick={() => setView("relations")}>Voir dans l’Explorateur</button><button type="button" className="primary-button" disabled={!!draftApplying} onClick={() => void applyDraft()}>{draftApplying ? `Application ${draftApplying.current}/${draftApplying.total}…` : "Valider le brouillon"}</button></div>}
               <div className="conversation" ref={conversationRef}>{conversation?.messages.map((item) => item.role === "user" ? <div className="user-message" key={item.id}>{item.content}</div> : <div className="assistant-message" key={item.id}><span>✦</span><div><Suspense fallback={<p>Affichage…</p>}><MarkdownAnswer content={item.content} /></Suspense><ConversationDetails actions={item.actions} citations={item.citations} sourceLabel="document(s) proposés à l’assistant" /></div></div>)}{pending && <><div className="user-message pending" aria-live="polite">{pending}</div><div className="assistant-message assistant-loading" role="status" aria-live="polite"><span>✦</span><div><span className="mini-spinner" aria-hidden="true" /><p>L’assistant réfléchit et consulte les documents nécessaires…</p></div></div></>}{!conversation?.messages.length && !pending && <p className="empty-hint">Cette conversation est vide. Demandez une recherche, une synthèse ou une action sur le projet.</p>}</div>
               {!status?.configured && <p className="local-warning">Ajoutez votre clé OpenAI dans Paramètres pour utiliser l’assistant.</p>}
-              <form className="chat-composer" onSubmit={ask}>{project.sourceRoot && <label className="assistant-permission"><input type="checkbox" checked={allowActions} onChange={(event) => setAllowActions(event.target.checked)} /><span>Autoriser l’assistant à préparer des modifications. Les fichiers restent en brouillon jusqu’à validation.</span></label>}<textarea value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Posez une question ou demandez une action…" minLength={3} maxLength={4000} required /><button className="primary-button" disabled={busy || !status?.configured}>{busy ? "…" : "Envoyer"}</button></form>
+              <form className="chat-composer" onSubmit={ask}><textarea value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Posez une question ou demandez une action…" minLength={3} required /><button className="primary-button" disabled={busy || !status?.configured}>{busy ? "…" : "Envoyer"}</button></form>
             </div>
           </div>}
       </section>}

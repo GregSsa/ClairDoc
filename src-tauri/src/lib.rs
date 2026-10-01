@@ -796,6 +796,95 @@ fn remove_empty_project_directory(root_path: String, relative_path: String) -> R
         .map_err(|_| "Ce dossier n'est pas vide ou ne peut pas être supprimé.".to_string())
 }
 
+fn project_file(root_path: &str, relative_path: &str) -> Result<(PathBuf, PathBuf), String> {
+    let root = PathBuf::from(root_path)
+        .canonicalize()
+        .map_err(|_| "Le dossier source est inaccessible sur ce PC.".to_string())?;
+    let relative = safe_relative_path(relative_path)?;
+    if relative.as_os_str().is_empty() || relative.starts_with(".clairdoc") {
+        return Err("Le fichier demandé est protégé ou invalide.".to_string());
+    }
+    let mut checked = root.clone();
+    for component in relative.components() {
+        checked.push(component);
+        if fs::symlink_metadata(&checked)
+            .map_err(|_| "Le fichier demandé est inaccessible.".to_string())?
+            .file_type()
+            .is_symlink()
+        {
+            return Err("Les liens symboliques ne sont pas modifiés par ClairDoc.".to_string());
+        }
+    }
+    let file = root
+        .join(&relative)
+        .canonicalize()
+        .map_err(|_| "Le fichier demandé est inaccessible.".to_string())?;
+    if !file.starts_with(&root) || !file.is_file() {
+        return Err("Le fichier demandé sort du projet.".to_string());
+    }
+    Ok((root, file))
+}
+
+#[tauri::command]
+fn rename_project_file(
+    root_path: String,
+    relative_path: String,
+    new_name: String,
+) -> Result<String, String> {
+    let (root, file) = project_file(&root_path, &relative_path)?;
+    let name = safe_relative_path(new_name.trim())?;
+    if name.components().count() != 1 || name == Path::new(".clairdoc") {
+        return Err("Indiquez un nom de fichier simple et valide.".to_string());
+    }
+    let destination = file
+        .parent()
+        .ok_or_else(|| "Le dossier parent est invalide.".to_string())?
+        .join(&name);
+    if destination.exists() {
+        return Err("Un fichier portant ce nom existe déjà dans ce dossier.".to_string());
+    }
+    fs::rename(&file, &destination)
+        .map_err(|error| format!("Impossible de renommer le fichier : {error}"))?;
+    destination
+        .strip_prefix(root)
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .map_err(|_| "Le nouveau chemin du fichier est invalide.".to_string())
+}
+
+#[tauri::command]
+fn trash_project_file(root_path: String, relative_path: String) -> Result<(), String> {
+    let (root, file) = project_file(&root_path, &relative_path)?;
+    let trash = root.join(".clairdoc").join("trash");
+    fs::create_dir_all(&trash)
+        .map_err(|error| format!("Impossible de préparer la corbeille ClairDoc : {error}"))?;
+    let original_name = file
+        .file_name()
+        .ok_or_else(|| "Le nom du fichier est invalide.".to_string())?;
+    let mut destination = trash.join(original_name);
+    if destination.exists() {
+        let stem = file
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("document");
+        let extension = file.extension().and_then(|value| value.to_str());
+        let mut counter = 2usize;
+        loop {
+            let candidate = match extension {
+                Some(value) => trash.join(format!("{stem}-{counter}.{value}")),
+                None => trash.join(format!("{stem}-{counter}")),
+            };
+            if !candidate.exists() {
+                destination = candidate;
+                break;
+            }
+            counter += 1;
+        }
+    }
+    fs::rename(file, destination).map_err(|error| {
+        format!("Impossible de placer le fichier dans la corbeille ClairDoc : {error}")
+    })
+}
+
 #[tauri::command]
 fn open_project_directory(root_path: String, relative_path: String) -> Result<(), String> {
     let (_, directory) = project_directory(&root_path, &relative_path)?;
@@ -1264,6 +1353,9 @@ async fn send_conversation_message(
     question: String,
     allow_write_actions: bool,
     names_only: bool,
+    allow_rename_actions: bool,
+    allow_move_actions: bool,
+    include_project_tree: bool,
 ) -> Result<AskResponse, String> {
     let config = read_server_config(&app)?;
     let response = api_client(Duration::from_secs(300))?
@@ -1275,7 +1367,11 @@ async fn send_conversation_message(
         .json(&serde_json::json!({
             "question": question,
             "allow_write_actions": allow_write_actions,
-            "names_only": names_only
+            "names_only": names_only,
+            "allow_rename_actions": allow_rename_actions,
+            "allow_move_actions": allow_move_actions,
+            "allow_delete_actions": false,
+            "include_project_tree": include_project_tree
         }))
         .send()
         .await
@@ -2103,6 +2199,8 @@ pub fn run() {
             list_project_directory,
             create_project_directory,
             remove_empty_project_directory,
+            rename_project_file,
+            trash_project_file,
             open_project_directory,
             get_runtime_info,
             get_project_source_access,

@@ -4,7 +4,9 @@ import {
   listProjectDirectory,
   openProjectDirectory,
   openProjectFile,
+  renameProjectFile,
   removeEmptyProjectDirectory,
+  trashProjectFile,
   type DocumentLibrary,
   type DraftAction,
   type LibraryDocument,
@@ -43,6 +45,7 @@ type Props = {
   draftNotice: string;
   onApplyDraft: () => void;
   onRemoveDraftItem: (conversationId: string, actionId: string) => void;
+  onFilesChanged?: () => void | Promise<unknown>;
 };
 
 const EMPTY_DRAFT_ACTIONS: DraftAction[] = [];
@@ -91,7 +94,7 @@ function virtualPage(documents: LibraryDocument[], path: string, offset: number)
   return { entries: entries.slice(offset, offset + PAGE_SIZE), total: entries.length, offset, limit: PAGE_SIZE };
 }
 
-export default function ProjectExplorer({ projectName, rootPath, library, draft, draftApplying, draftError, draftNotice, onApplyDraft, onRemoveDraftItem }: Props) {
+export default function ProjectExplorer({ projectName, rootPath, library, draft, draftApplying, draftError, draftNotice, onApplyDraft, onRemoveDraftItem, onFilesChanged }: Props) {
   const documents = library?.documents ?? EMPTY_DOCUMENTS;
   const draftActions = draft?.actions ?? EMPTY_DRAFT_ACTIONS;
   const [path, setPath] = useState("");
@@ -109,9 +112,16 @@ export default function ProjectExplorer({ projectName, rootPath, library, draft,
   const [resultLimit, setResultLimit] = useState(PAGE_SIZE);
   const [draftLimit, setDraftLimit] = useState(30);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [manualRenames, setManualRenames] = useState<Map<string, string>>(() => new Map());
+  const [manualDeletions, setManualDeletions] = useState<Set<string>>(() => new Set());
+  const visibleDocuments = useMemo(() => documents.flatMap((document) => {
+    const currentPath = manualRenames.get(document.sourceRelativePath) ?? document.sourceRelativePath;
+    if (manualDeletions.has(currentPath)) return [];
+    return [{ ...document, name: currentPath.slice(currentPath.lastIndexOf("/") + 1), sourceRelativePath: currentPath }];
+  }), [documents, manualDeletions, manualRenames]);
   const originalPaths = useMemo(
-    () => new Set(documents.map((document) => document.sourceRelativePath)),
-    [documents],
+    () => new Set(visibleDocuments.map((document) => document.sourceRelativePath)),
+    [visibleDocuments],
   );
   const lastPendingActionIds = useMemo(() => {
     const lastByJob = new Map<string, string>();
@@ -127,7 +137,7 @@ export default function ProjectExplorer({ projectName, rootPath, library, draft,
       actionsByJob.set(action.job_id, list);
     }
     const result: LibraryDocument[] = [];
-    for (const document of documents) {
+    for (const document of visibleDocuments) {
       const actions = actionsByJob.get(document.jobId) ?? [];
       let currentPath: string | null = document.sourceRelativePath;
       for (const action of actions) {
@@ -143,7 +153,7 @@ export default function ProjectExplorer({ projectName, rootPath, library, draft,
       if (currentPath) result.push({ ...document, name: currentPath.slice(currentPath.lastIndexOf("/") + 1), sourceRelativePath: currentPath });
     }
     return result;
-  }, [documents, draftActions]);
+  }, [visibleDocuments, draftActions]);
   const documentByPath = useMemo(() => new Map(previewDocuments.map((document) => [document.sourceRelativePath, document])), [previewDocuments]);
   const selectedDocument = selectedPath ? documentByPath.get(selectedPath) : undefined;
   const linkedDocument = linkedTo ? documents.find((document) => document.jobId === linkedTo) : undefined;
@@ -211,7 +221,7 @@ export default function ProjectExplorer({ projectName, rootPath, library, draft,
     setLoading(true);
     setError("");
     if (!rootPath) {
-      setDirectory(virtualPage(documents, path, page * PAGE_SIZE));
+      setDirectory(virtualPage(visibleDocuments, path, page * PAGE_SIZE));
       setLocalAvailable(false);
       setLoading(false);
       return;
@@ -228,7 +238,7 @@ export default function ProjectExplorer({ projectName, rootPath, library, draft,
       })
       .catch(() => {
         if (!active) return;
-        const result = virtualPage(documents, path, page * PAGE_SIZE);
+        const result = virtualPage(visibleDocuments, path, page * PAGE_SIZE);
         if (page > 0 && result.total <= page * PAGE_SIZE) {
           setPage(Math.max(0, Math.ceil(result.total / PAGE_SIZE) - 1));
           return;
@@ -238,7 +248,7 @@ export default function ProjectExplorer({ projectName, rootPath, library, draft,
       })
       .finally(() => active && setLoading(false));
     return () => { active = false; };
-  }, [rootPath, path, page, refresh, documents]);
+  }, [rootPath, path, page, refresh, visibleDocuments]);
 
   function navigate(nextPath: string) {
     setPath(nextPath);
@@ -298,6 +308,50 @@ export default function ProjectExplorer({ projectName, rootPath, library, draft,
     }
   }
 
+  async function renameSelectedFile() {
+    if (!rootPath || !localAvailable || !selectedPath || selectedIsPlanned) return;
+    const currentName = selectedPath.slice(selectedPath.lastIndexOf("/") + 1);
+    const newName = window.prompt("Nouveau nom du fichier", currentName)?.trim();
+    if (!newName || newName === currentName) return;
+    setBusy(true);
+    setError("");
+    try {
+      const newPath = await renameProjectFile(rootPath, selectedPath, newName);
+      setManualRenames((current) => {
+        const next = new Map(current);
+        const originalPath = [...next].find(([, value]) => value === selectedPath)?.[0] ?? selectedPath;
+        next.set(originalPath, newPath);
+        return next;
+      });
+      setSelectedPath(newPath);
+      setRefresh((value) => value + 1);
+      await onFilesChanged?.();
+    } catch (caught) {
+      setError(typeof caught === "string" ? caught : "Impossible de renommer ce fichier.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteSelectedFile() {
+    if (!rootPath || !localAvailable || !selectedPath || selectedIsPlanned) return;
+    const fileName = selectedPath.slice(selectedPath.lastIndexOf("/") + 1);
+    if (!window.confirm(`Placer « ${fileName} » dans la corbeille ClairDoc ?\n\nLe fichier pourra être récupéré dans .clairdoc/trash.`)) return;
+    setBusy(true);
+    setError("");
+    try {
+      await trashProjectFile(rootPath, selectedPath);
+      setManualDeletions((current) => new Set(current).add(selectedPath));
+      setSelectedPath(null);
+      setRefresh((value) => value + 1);
+      await onFilesChanged?.();
+    } catch (caught) {
+      setError(typeof caught === "string" ? caught : "Impossible de supprimer ce fichier.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const segments = path ? path.split("/") : [];
   const breadcrumbs = segments.map((name, index) => ({ name, path: segments.slice(0, index + 1).join("/") }));
   const hiddenAncestors = breadcrumbs.slice(0, -3);
@@ -339,7 +393,7 @@ export default function ProjectExplorer({ projectName, rootPath, library, draft,
         {!searchMode && !loading && displayedEntries.map((entry) => entry.kind === "directory" ? (
           <button type="button" className={`explorer-row ${plannedDirectoryPaths.has(entry.relativePath) ? "planned" : ""}`} key={entry.relativePath} onClick={() => navigate(entry.relativePath)}><ExplorerItemIcon name={entry.name} directory /><span><strong>{entry.name}</strong><small>{plannedDirectoryPaths.has(entry.relativePath) ? "Dossier présent dans le brouillon" : `${folderCounts.get(entry.name) ?? 0} document(s) importé(s) dans ce dossier et ses sous-dossiers`}</small></span><span className="explorer-row-end" aria-hidden="true">›</span></button>
         ) : (
-          <button type="button" className={`explorer-row ${selectedPath === entry.relativePath ? "selected" : ""} ${plannedPaths.has(entry.relativePath) ? "planned" : ""}`} key={entry.relativePath} onClick={() => setSelectedPath(entry.relativePath)} onDoubleClick={() => { if (!plannedPaths.has(entry.relativePath)) void openSelected(entry.relativePath); }}><ExplorerItemIcon name={entry.name} /><span><strong>{entry.name}</strong><small>{plannedPaths.has(entry.relativePath) ? "Prévu dans le brouillon · non présent sur le disque" : documentByPath.has(entry.relativePath) ? `${documentByPath.get(entry.relativePath)?.category} · importé` : "Non importé"}{entry.bytes ? ` · ${new Intl.NumberFormat("fr-FR").format(entry.bytes)} octets` : ""}</small></span><span className="explorer-row-end" aria-hidden="true">›</span></button>
+          <button type="button" className={`explorer-row ${selectedPath === entry.relativePath ? "selected" : ""} ${plannedPaths.has(entry.relativePath) ? "planned" : ""}`} key={entry.relativePath} onClick={() => setSelectedPath(entry.relativePath)} onDoubleClick={() => { if (!plannedPaths.has(entry.relativePath)) void openSelected(entry.relativePath); }}><ExplorerItemIcon name={entry.name} /><span><strong>{entry.name}</strong><small>{plannedPaths.has(entry.relativePath) ? "Prévu dans le brouillon · non présent sur le disque" : documentByPath.has(entry.relativePath) ? `${documentByPath.get(entry.relativePath)?.category} · importé` : "Non importé"}{entry.bytes ? ` · ${new Intl.NumberFormat("fr-FR").format(entry.bytes)} octets` : ""}</small></span></button>
         ))}
         {!searchMode && !loading && displayedEntries.length === 0 && <p className="explorer-empty">Ce dossier est vide.</p>}
         {searchMode && displayedResults.map((document) => <button type="button" className={`explorer-row ${selectedPath === document.sourceRelativePath ? "selected" : ""} ${plannedPaths.has(document.sourceRelativePath) ? "planned" : ""}`} key={`${document.jobId}-${document.sourceRelativePath}`} onClick={() => setSelectedPath(document.sourceRelativePath)}><ExplorerItemIcon name={document.name} /><span><strong>{document.name}</strong><small>{document.sourceRelativePath} · {document.category}{plannedPaths.has(document.sourceRelativePath) ? " · brouillon" : ""}</small></span><span className="explorer-row-end">{relationCounts.get(document.jobId) ?? 0} lien(s)</span></button>)}
@@ -347,7 +401,7 @@ export default function ProjectExplorer({ projectName, rootPath, library, draft,
       </div>
       {!searchMode && directory && directory.total > PAGE_SIZE && <div className="explorer-pagination"><button type="button" disabled={page === 0 || loading} onClick={() => setPage((value) => Math.max(0, value - 1))}>Précédent</button><span>Page {page + 1} sur {Math.ceil(directory.total / PAGE_SIZE)}</span><button type="button" disabled={loading || (page + 1) * PAGE_SIZE >= directory.total} onClick={() => setPage((value) => value + 1)}>Suivant</button></div>}
       {searchMode && results.length > resultLimit && <button type="button" className="explorer-more" onClick={() => setResultLimit((value) => value + PAGE_SIZE)}>Afficher {Math.min(PAGE_SIZE, results.length - resultLimit)} résultats supplémentaires</button>}
-      {selectedPath && <div className="explorer-selection"><div><strong>{selectedPath.slice(selectedPath.lastIndexOf("/") + 1)}</strong><small>{selectedPath}</small>{selectedIsPlanned ? <p>Chemin prévu : le fichier sera disponible après validation.</p> : selectedDocument && <p>{selectedDocument.category} · {relationCounts.get(selectedDocument.jobId) ?? 0} lien(s) · {selectedDocument.status === "indexed" ? "indexé" : "à indexer"}</p>}</div><div><button type="button" disabled={!localAvailable || selectedIsPlanned} onClick={() => void openSelected(selectedPath)}>Ouvrir le fichier</button>{selectedDocument && <button type="button" onClick={() => { setLinkedTo(selectedDocument.jobId); setResultLimit(PAGE_SIZE); }}>Voir ses liens</button>}{!searchMode && selectedDocument && <button type="button" onClick={() => { setSearch(selectedDocument.name); setResultLimit(PAGE_SIZE); }}>Rechercher ce nom</button>}</div></div>}
+      {selectedPath && <div className="explorer-selection"><div><strong>{selectedPath.slice(selectedPath.lastIndexOf("/") + 1)}</strong><small>{selectedPath}</small>{selectedIsPlanned ? <p>Chemin prévu : le fichier sera disponible après validation.</p> : selectedDocument && <p>{selectedDocument.category} · {relationCounts.get(selectedDocument.jobId) ?? 0} lien(s) · {selectedDocument.status === "indexed" ? "indexé" : "à indexer"}</p>}</div><div><button type="button" disabled={!localAvailable || selectedIsPlanned || busy} onClick={() => void openSelected(selectedPath)}>Ouvrir le fichier</button><button type="button" disabled={!localAvailable || selectedIsPlanned || busy} onClick={() => void renameSelectedFile()}>Renommer</button><button type="button" className="danger" disabled={!localAvailable || selectedIsPlanned || busy} onClick={() => void deleteSelectedFile()}>Supprimer</button>{selectedDocument && <button type="button" onClick={() => { setLinkedTo(selectedDocument.jobId); setResultLimit(PAGE_SIZE); }}>Voir ses liens</button>}{!searchMode && selectedDocument && <button type="button" onClick={() => { setSearch(selectedDocument.name); setResultLimit(PAGE_SIZE); }}>Rechercher ce nom</button>}</div></div>}
     </div>
   );
 }
